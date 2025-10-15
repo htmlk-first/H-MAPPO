@@ -20,19 +20,18 @@ This repository implements MAPPO, a multi-agent variant of PPO. The implementati
 **WARNING: by default all experiments assume a shared policy by all agents i.e. there is one neural network shared by all agents**
 
 All core code is located within the onpolicy folder. The algorithms/ subfolder contains algorithm-specific code
-for MAPPO. 
+for MAPPO.
 
-* The envs/ subfolder contains environment wrapper implementations for the MPEs, SMAC, and Hanabi. 
+* The envs/ subfolder contains environment wrapper implementations for the MPEs, SMAC, and Hanabi.
 
-* Code to perform training rollouts and policy updates are contained within the runner/ folder - there is a runner for 
-each environment. 
+* Code to perform training rollouts and policy updates are contained within the runner/ folder - there is a runner for each environment.
 
 * Executable scripts for training with default hyperparameters can be found in the scripts/ folder. The files are named
-in the following manner: train_algo_environment.sh. Within each file, the map name (in the case of SMAC and the MPEs) can be altered. 
-* Python training scripts for each environment can be found in the scripts/train/ folder. 
+in the following manner: train_algo_environment.sh. Within each file, the map name (in the case of SMAC and the MPEs) can be altered.
+* Python training scripts for each environment can be found in the scripts/train/ folder.
 
 * The config.py file contains relevant hyperparameter and env settings. Most hyperparameters are defaulted to the ones
-used in the paper; however, please refer to the appendix for a full list of hyperparameters used. 
+used in the paper; however, please refer to the appendix for a full list of hyperparameters used.
 
 
 ## 2. Installation
@@ -56,8 +55,6 @@ Even though we provide requirement.txt, it may have redundancy. We recommend tha
 
 ### 2.1 StarCraftII [4.10](http://blzdistsc2-a.akamaihd.net/Linux/SC2.4.10.zip)
 
-   
-
 ``` Bash
 unzip SC2.4.10.zip
 # password is iagreetotheeula
@@ -67,7 +64,6 @@ echo "export SC2PATH=~/StarCraftII/" > ~/.bashrc
 * download SMAC Maps, and move it to `~/StarCraftII/Maps/`.
 
 * To use a stableid, copy `stableid.json` from https://github.com/Blizzard/s2client-proto.git to `~/StarCraftII/`.
-
 
 ### 2.2 Hanabi
 Environment code for Hanabi is developed from the open-source environment code, but has been slightly modified to fit the algorithms used here.  

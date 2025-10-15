@@ -3,6 +3,8 @@ from sklearn.cluster import KMeans
 from scipy.spatial.distance import cdist
 import gymnasium as gym  # gymnasium import
 from gymnasium.spaces import Box, Discrete, MultiDiscrete
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
 from .parameters import *
 from .entities import UAV, Target, Jammer
@@ -20,6 +22,15 @@ class UAVEnv:
         self.n_clusters = N_UAVS  # One cluster per UAV for now
         self.cluster_centers = None
         self.target_clusters = None
+        
+        # Visualization setup
+        self.fig, self.ax = None, None
+        self.uav_plots = []
+        self.uav_trajectories = []
+        self.target_plots = []
+        self.jammer_plots = []
+        self.cluster_center_plots = []
+        self.info_text = None
 
         # Low-level agent's observation space
         # [pos_x, pos_y, rem_energy, other_uav_rel_pos (3*2), rel_cluster_pos (2)]
@@ -33,7 +44,7 @@ class UAVEnv:
         share_obs_dim = obs_dim * N_UAVS
         for _ in range(N_UAVS):
             self.share_observation_space.append(Box(low=-np.inf, high=np.inf, shape=(share_obs_dim,), dtype=np.float32))
-
+        
         # Low-level agent's action space (Hybrid: Continuous + Discrete)
         # Continuous part: [speed, angle]
         # Discrete part: [comm_mode, semantic_level]
@@ -47,10 +58,15 @@ class UAVEnv:
             self.action_space.append((continuous_action_space, discrete_action_space))
 
     def reset(self):
-        """Resets the environment to an initial state."""
+        # Reset trajectory paths for visualization
+        for uav in self.uavs:
+            uav.path = []
+        
+        # Resets the environment to an initial state.
         self.time_step = 0
         for uav in self.uavs:
             uav.reset()
+            uav.path.append(uav.pos[:2].copy()) # Store initial position
         for target in self.targets:
             target.reset()
 
@@ -77,19 +93,29 @@ class UAVEnv:
         total_latency = 0
 
         for i, uav in enumerate(self.uavs):
+            if uav.rem_energy <= 0:
+                uav.path.append(uav.pos[:2].copy()) # 움직이지 않더라도 경로 기록
+                continue # 에너지가 없으면 이번 스텝의 행동을 건너뜀
+            
             flat_action = actions[i]
 
+            # Debug: Print the action taken by UAV 0
+            if i == 0: 
+                print(f"Step {self.time_step}, UAV 0 Action: [Speed/Angle: ({flat_action[0]:.2f}, {flat_action[1]:.2f}), Comm: {np.round(flat_action[2])}, Sem: {np.round(flat_action[3])}]")
+            
             # --- DE-FLATTEN THE ACTION TENSOR ---
             # Continuous part (first 2 elements): speed, angle
             cont_action = flat_action[0:2]
-            speed, angle = cont_action[0], cont_action[1]
+            speed, angle = np.abs(cont_action[0]), cont_action[1]
             vel_action = np.array([speed * np.cos(angle), speed * np.sin(angle)])
 
             # Discrete part (rest of elements): comm_mode, semantic_level
             # These are now floats from concatenation, so we must round and cast to int
             disc_actions = np.round(flat_action[2:]).astype(int)
-            comm_mode_action = disc_actions[0]
-            sem_level_action = disc_actions[1]
+            # comm_mode_action = disc_actions[0]
+            # sem_level_action = disc_actions[1]
+            comm_mode_action = np.clip(disc_actions[0], 0, ACTION_COMM_MODE - 1)
+            sem_level_action = np.clip(disc_actions[1], 0, ACTION_SEM_LEVEL - 1)
 
             # 1. Update UAV position and calculate propulsion energy
             propulsion_energy = self._calculate_propulsion_energy(uav, vel_action)
@@ -97,6 +123,7 @@ class UAVEnv:
             uav.pos[0] += vel_action[0]
             uav.pos[1] += vel_action[1]
             uav.pos = np.clip(uav.pos, [0, 0, UAV_ALTITUDE], [AREA_WIDTH, AREA_HEIGHT, UAV_ALTITUDE])
+            uav.path.append(uav.pos[:2].copy())
 
             # 2. Communication logic
             # Find nearest unvisited target in assigned cluster
@@ -148,6 +175,64 @@ class UAVEnv:
         rewards = [reward for _ in range(N_UAVS)]
 
         return obs, rewards, dones, infos
+
+    def render(self, mode='human'):
+        if self.fig is None:
+            plt.ion()
+            self.fig, self.ax = plt.subplots(figsize=(8, 8))
+            
+            uav_colors = ['blue', 'red', 'green', 'purple']
+            for i in range(N_UAVS):
+                plot = self.ax.scatter([], [], c=uav_colors[i], marker='^', s=100, label=f'UAV {i}', zorder=3)
+                self.uav_plots.append(plot)
+                traj, = self.ax.plot([], [], c=uav_colors[i], linestyle='-', linewidth=1, zorder=2)
+                self.uav_trajectories.append(traj)
+
+            self.target_plots = self.ax.scatter([], [], c='gray', marker='o', s=50, label='Target', zorder=1)
+            
+            for jammer in self.jammers:
+                circle = patches.Circle(jammer.pos, 150, color='orangered', alpha=0.3, zorder=0)
+                self.ax.add_patch(circle)
+            
+            self.cluster_center_plots = self.ax.scatter([], [], c='black', marker='x', s=100, label='Cluster Center', zorder=4)
+            self.info_text = self.ax.text(0.02, 1.02, '', transform=self.ax.transAxes)
+            self.ax.legend(loc='upper right')
+
+        self.ax.set_xlim(0, AREA_WIDTH)
+        self.ax.set_ylim(0, AREA_HEIGHT)
+        self.ax.set_aspect('equal')
+        self.ax.grid(True)
+        
+        uav_positions = np.array([uav.pos[:2] for uav in self.uavs])
+        for i in range(N_UAVS):
+            self.uav_plots[i].set_offsets(uav_positions[i])
+            traj_data = np.array(self.uavs[i].path)
+            self.uav_trajectories[i].set_data(traj_data[:,0], traj_data[:,1])
+
+        target_positions = np.array([t.pos for t in self.targets])
+        target_colors = ['limegreen' if t.is_visited else 'gray' for t in self.targets]
+        self.target_plots.set_offsets(target_positions)
+        self.target_plots.set_color(target_colors)
+
+        if self.cluster_centers is not None:
+            self.cluster_center_plots.set_offsets(self.cluster_centers)
+        
+        info_str = f'Time: {self.time_step} / {SIM_TIME_STEPS}\n'
+        for i, uav in enumerate(self.uavs):
+            info_str += f'UAV {i} Energy: {uav.rem_energy:.0f}\n'
+        self.info_text.set_text(info_str)
+
+        self.fig.canvas.draw()
+        plt.pause(0.01)
+       
+        if mode == 'rgb_array':
+            self.fig.canvas.draw()
+            image_buf = self.fig.canvas.tostring_argb()
+            image = np.frombuffer(image_buf, dtype='uint8')
+            # 4채널(ARGB)로 reshape한 후, 3채널(RGB)만 슬라이싱
+            width, height = self.fig.canvas.get_width_height()
+            image = image.reshape(height, width, 4)[:, :, :3]
+            return image
 
     # --- Helper methods for physics and communication models ---
 
@@ -288,5 +373,7 @@ class UAVEnv:
         return states
 
     def close(self):
-        """Closes the environment."""
-        pass
+        if self.fig is not None:
+            plt.ioff()
+            plt.close(self.fig)
+            self.fig, self.ax = None, None

@@ -10,18 +10,20 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 from onpolicy.config import get_config
 from onpolicy.envs.uav.uav_env import UAVEnv
 from onpolicy.algorithms.r_mappo.algorithm.r_actor_critic import R_Actor
+from onpolicy.envs.uav.parameters import SIM_TIME_STEPS
 
 def main():
     parser = get_config()
     all_args = parser.parse_args()
 
-    # --- 추가된/수정된 파라미터 ---
+    # --- 렌더링을 위한 파라미터 설정 ---
     all_args.n_rollout_threads = 1
-    all_args.num_agents = 4 # UAV 수
-    all_args.episode_length = 500 # 시뮬레이션 최대 길이
-    all_args.use_render = True # 렌더링 사용 여부
-    all_args.save_gifs = True # GIF 저장 여부
-    # ----------------------------
+    all_args.num_agents = 4
+    all_args.episode_length = SIM_TIME_STEPS
+    all_args.use_render = True
+    all_args.save_gifs = True
+    all_args.ifi = 0.1
+    # ----------------------------------
 
     # env setup
     env = UAVEnv()
@@ -31,16 +33,19 @@ def main():
     
     # load model
     print(f"Loading model from {all_args.model_dir}")
-    actor_state_dict = torch.load(str(all_args.model_dir) + '/actor.pt', map_location=torch.device('cpu'))
-    actor.load_state_dict(actor_state_dict)
+    try:
+        actor_state_dict = torch.load(str(all_args.model_dir) + '/actor.pt', map_location=torch.device('cpu'))
+        actor.load_state_dict(actor_state_dict)
+    except FileNotFoundError:
+        print(f"Error: Model file not found at {all_args.model_dir}. Please train a model first.")
+        return
+        
     actor.eval()
 
-    # GIF 저장을 위한 준비
     frames = []
-    
-    # Run a single episode
     obs, info = env.reset()
     
+    # rnn_states를 NumPy 배열로 초기화
     rnn_states = np.zeros((all_args.num_agents, all_args.recurrent_N, all_args.hidden_size), dtype=np.float32)
     masks = np.ones((all_args.num_agents, 1), dtype=np.float32)
 
@@ -50,25 +55,31 @@ def main():
             if all_args.save_gifs:
                 frames.append(frame)
 
-        # Get actions from the loaded policy
         with torch.no_grad():
-            action, _, rnn_states = actor(torch.from_numpy(np.array(obs)), 
-                                        torch.from_numpy(rnn_states), 
-                                        torch.from_numpy(masks), 
-                                        deterministic=True)
-        
-        # Unpack actions and step the environment
-        actions = np.array(np.split(action.detach().cpu().numpy(), all_args.n_rollout_threads))
+            # 버퍼에서 오는 데이터와 모양을 맞추기 위해 rnn_states를 3D -> 2D로 변경
+            rnn_states_input = rnn_states.reshape(-1, all_args.hidden_size)
+            
+            action_tensor, _, rnn_states_tensor = actor(torch.from_numpy(np.array(obs)).float(), 
+                                                        torch.from_numpy(rnn_states_input).float(), 
+                                                        torch.from_numpy(masks).float(), 
+                                                        deterministic=True)
+            
+            # 신경망의 출력(Tensor)을 다음 루프를 위해 다시 NumPy 배열로 변환
+            rnn_states = rnn_states_tensor.detach().cpu().numpy().reshape(all_args.num_agents, all_args.recurrent_N, all_args.hidden_size)                
+            # --------------------
+        actions = np.array(np.split(action_tensor.detach().cpu().numpy(), all_args.n_rollout_threads))
         obs, rewards, dones, infos = env.step(actions[0])
 
         if np.all(dones):
+            print("Mission accomplished!")
             break
-
-    # Save GIF
+            
     if all_args.save_gifs:
-        gif_path = str(all_args.model_dir) + '/render.gif'
+        render_dir = Path(str(all_args.model_dir) + "/renders")
+        render_dir.mkdir(exist_ok=True)
+        gif_path = render_dir / 'render.gif'
         print(f"Saving GIF to {gif_path}")
-        imageio.mimsave(gif_path, frames, duration=0.1, loop=0)
+        imageio.mimsave(gif_path, frames, duration=all_args.ifi, loop=0)
 
     env.close()
 
