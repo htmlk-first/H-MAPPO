@@ -38,7 +38,6 @@ class SharedReplayBuffer(object):
 
         if type(obs_shape[-1]) == list:
             obs_shape = obs_shape[:1]
-
         if type(share_obs_shape[-1]) == list:
             share_obs_shape = share_obs_shape[:1]
 
@@ -61,22 +60,25 @@ class SharedReplayBuffer(object):
         else:
             self.available_actions = None
 
-        # --- 👇 여기가 모든 문제의 원인이자 최종 수정 지점입니다 ---
+        # [수정] MultiDiscrete를 포함한 모든 행동 공간의 차원을 올바르게 계산합니다.
+        act_shape = 0
         if isinstance(act_space, tuple):
-            # Custom logic for our Hybrid action space (Box, MultiDiscrete)
-            # act_space[0] is Box, act_space[1] is MultiDiscrete
             cont_dim = get_shape_from_act_space(act_space[0])
             disc_dim = len(act_space[1].nvec)
             act_shape = cont_dim + disc_dim
+        elif act_space.__class__.__name__ == 'MultiDiscrete':
+            act_shape = len(act_space.nvec) # MultiDiscrete의 경우, 차원의 개수를 사용
         else:
-            # Original logic for single spaces
             act_shape = get_shape_from_act_space(act_space)
-        # --------------------------------------------------------
-
+        
+        # get_shape_from_act_space가 튜플을 반환하는 경우를 대비한 안전장치
+        if isinstance(act_shape, tuple):
+            act_shape = act_shape[0]
+            
         self.actions = np.zeros(
             (self.episode_length, self.n_rollout_threads, num_agents, act_shape), dtype=np.float32)
         
-        # action_log_probs는 단일 값이므로 차원을 1로 설정합니다.
+        # action_log_probs는 모든 행동에 대해 합산된 단일 값이므로 차원은 1입니다.
         self.action_log_probs = np.zeros(
             (self.episode_length, self.n_rollout_threads, num_agents, 1), dtype=np.float32)
             
@@ -112,7 +114,6 @@ class SharedReplayBuffer(object):
 
         self.step = (self.step + 1) % self.episode_length
 
-    # ... (파일의 나머지 부분은 원본과 동일하게 유지) ...
     def chooseinsert(self, share_obs, obs, rnn_states, rnn_states_critic, actions, action_log_probs,
                      value_preds, rewards, masks, bad_masks=None, active_masks=None, available_actions=None):
         self.share_obs[self.step] = share_obs.copy()

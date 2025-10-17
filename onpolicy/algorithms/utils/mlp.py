@@ -47,6 +47,9 @@ class MLPBase(nn.Module):
         self.mlp = MLPLayer(obs_dim, self.hidden_size,
                               self._layer_N, self._use_orthogonal, self._use_ReLU)
 
+        # [수정] 클래스가 자신의 출력 차원을 알 수 있도록 output_dim 속성을 추가합니다.
+        self.output_dim = self.hidden_size
+
     def forward(self, x):
         if self._use_feature_normalization:
             x = self.feature_norm(x)
