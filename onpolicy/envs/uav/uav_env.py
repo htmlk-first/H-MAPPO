@@ -100,8 +100,8 @@ class UAVEnv:
             flat_action = actions[i]
 
             # Debug: Print the action taken by UAV 0
-            if i == 0: 
-                print(f"Step {self.time_step}, UAV 0 Action: [Speed/Angle: ({flat_action[0]:.2f}, {flat_action[1]:.2f}), Comm: {np.round(flat_action[2])}, Sem: {np.round(flat_action[3])}]")
+            # if i == 0: 
+            #     print(f"Step {self.time_step}, UAV 0 Action: [Speed/Angle: ({flat_action[0]:.2f}, {flat_action[1]:.2f}), Comm: {np.round(flat_action[2])}, Sem: {np.round(flat_action[3])}]")
             
             # --- DE-FLATTEN THE ACTION TENSOR ---
             # Continuous part (first 2 elements): speed, angle

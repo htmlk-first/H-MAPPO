@@ -11,7 +11,7 @@ N_JAMMERS = 2
 # UAV Parameters
 UAV_ALTITUDE = 100  # meters
 UAV_MAX_SPEED = 20  # m/s
-UAV_MAX_ENERGY = 10000.0  # Joules (10 kJ)
+UAV_MAX_ENERGY = 10000.0  # Joules (Default: 10 kJ)
 UAV_SAFE_DISTANCE = 50 # meters for collision penalty
 
 # Propulsion Energy Model Parameters (for non-linear model)
