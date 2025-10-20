@@ -111,7 +111,7 @@ class UAVEnv(gym.Env):
         initial_goals = np.array([np.argmin([np.linalg.norm(uav.pos[:2] - cc) for cc in self.cluster_centers]) for uav in self.uavs])
         self.set_goals(initial_goals)
         
-        return self._get_full_obs()
+        return self._get_full_obs(), {}
 
     def step(self, low_level_actions):
         # ... (step 로직은 이전과 동일, 맨 아래 반환 부분만 변경) ...

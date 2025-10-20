@@ -696,6 +696,27 @@ class DummyVecEnv(ShareVecEnv):
                 env.render(mode=mode)
         else:
             raise NotImplementedError
+    
+    # [수정] 아래 env_method 함수 전체를 추가하세요.
+    def env_method(self, method_name, *method_args, **method_kwargs):
+        """
+        vec_env 내의 모든 환경에 대해 특정 메서드를 호출합니다.
+        H-MAPPO가 'set_goals'를 호출하기 위해 필요합니다.
+        """
+        results = []
+        for i, env in enumerate(self.envs):
+            # 환경(env)에서 'set_goals' 메서드를 찾습니다.
+            method = getattr(env, method_name)
+            
+            # 이 환경(i)에 해당하는 인자(arguments)를 추출합니다.
+            # 예: high_actions[i]
+            env_specific_args = [arg[i] for arg in method_args]
+            
+            # env.set_goals(high_actions[i])를 호출합니다.
+            result = method(*env_specific_args, **method_kwargs)
+            results.append(result)
+        return results
+    
 
 
 class ShareDummyVecEnv(ShareVecEnv):

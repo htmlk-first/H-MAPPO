@@ -42,6 +42,12 @@ class H_Actor(nn.Module):
         self.to(device)
 
     def forward(self, obs, rnn_states, masks, available_actions=None, deterministic=False):
+        obs = check(obs).to(**self.tpdv)
+        rnn_states = check(rnn_states).to(**self.tpdv)
+        masks = check(masks).to(**self.tpdv)
+        if available_actions is not None:
+            available_actions = check(available_actions).to(**self.tpdv)
+        
         if self.base is not None: # High-level
             actor_features = self.base(obs)
         else: # Low-level
@@ -85,7 +91,11 @@ class H_Critic(nn.Module):
         self.to(device)
 
     def forward(self, share_obs, rnn_states, masks):
+        share_obs = check(share_obs).to(**self.tpdv)
+        rnn_states = check(rnn_states).to(**self.tpdv)
+        masks = check(masks).to(**self.tpdv)
         critic_features = self.base(share_obs)
+        
         if self._use_recurrent_policy:
             critic_features, rnn_states = self.rnn(critic_features, rnn_states, masks)
         values = self.v_out(critic_features)

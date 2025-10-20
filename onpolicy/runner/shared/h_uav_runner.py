@@ -93,93 +93,204 @@ class H_UAVRunner(Runner):
                 print(f"\n Episode {episode}/{episodes}, total num timesteps {total_num_steps} || FPS {int(total_num_steps / (end - start))}")
 
     def warmup(self):
-        full_obs = self.envs.reset()
-        obs, share_obs = self.unpack_obs(full_obs)
+        # [수정] DummyVecEnv.reset()은 (obs, infos) 튜플을 반환합니다.
+        full_obs_tuple = self.envs.reset()
+        # obs, share_obs를 얻기 위해 튜플의 첫 번째 요소(obs)만 전달합니다.
+        obs, share_obs = self.unpack_obs(full_obs_tuple[0])
         
         self.low_level_buffer.share_obs[0] = share_obs['low_level'].copy()
         self.low_level_buffer.obs[0] = obs['low_level'].copy()
 
         self.high_level_buffer.share_obs[0] = share_obs['high_level'].copy()
         self.high_level_buffer.obs[0] = obs['high_level'].copy()
-
+        
     def unpack_obs(self, full_obs_stacked):
-        # VecEnv가 반환하는 list of dicts를 dict of lists/arrays로 변환
-        obs_list = [d['obs'] for d in full_obs_stacked]
-        share_obs_list = [d['share_obs'] for d in full_obs_stacked]
+        # full_obs_stacked는 (n_rollout_threads, ) 형태이며, 
+        # 각 요소는 {'high_level': ..., 'low_level': ...} 딕셔너리입니다.
+        # (n_rollout_threads=1일 때) full_obs_stacked.shape = (1,)
+        
+        # 1. High-level obs/share_obs (둘은 동일하며, 이미 중앙 집중형임)
+        # d['high_level']의 shape: (1, high_obs_dim)
+        # high_level_obs의 shape: (n_rollout_threads, 1, high_obs_dim)
+        high_level_obs = np.array([d['high_level'] for d in full_obs_stacked])
 
+        # 2. Low-level obs (개별 에이전트 관측)
+        # d['low_level']의 shape: (num_agents, low_obs_dim)
+        # obs_low_level_stacked의 shape: (n_rollout_threads, num_agents, low_obs_dim)
+        obs_low_level_stacked = np.array([d['low_level'] for d in full_obs_stacked])
+
+        # 3. Low-level share_obs (모든 에이전트의 관측을 하나로 합친 중앙 집중형 관측)
+        # uav_env.py에 정의된 share_low_obs_dim = low_obs_dim * num_uavs
+        
+        n_rollout_threads = len(full_obs_stacked)
+        
+        # (n_threads, num_agents, low_obs_dim) -> (n_threads, num_agents * low_obs_dim)
+        share_obs_low_level_flat = obs_low_level_stacked.reshape(n_rollout_threads, -1)
+        
+        # (n_threads, num_agents * low_obs_dim) -> (n_threads, 1, num_agents * low_obs_dim)
+        share_obs_low_level_expanded = np.expand_dims(share_obs_low_level_flat, 1)
+        
+        # (n_threads, 1, ...) -> (n_threads, num_agents, ...)
+        # 각 에이전트가 동일한 중앙 집중형 관측을 공유하도록 복제(tile)합니다.
+        share_obs_low_level_tiled = np.tile(
+            share_obs_low_level_expanded, 
+            (1, self.num_agents, 1)
+        )
+
+        # 최종 obs/share_obs 딕셔너리 반환
         obs = {
-            'low_level': np.array([o['low_level'] for o in obs_list]),
-            'high_level': np.array([o['high_level'] for o in obs_list])
+            'low_level': obs_low_level_stacked,
+            'high_level': high_level_obs
         }
         share_obs = {
-            'low_level': np.array([s['low_level'] for s in share_obs_list]),
-            'high_level': np.array([s['high_level'] for s in share_obs_list])
+            'low_level': share_obs_low_level_tiled,
+            'high_level': high_level_obs # High-level obs는 이미 중앙 집중형이므로 그대로 사용
         }
         return obs, share_obs
 
     @torch.no_grad()
     def collect_low_level(self):
         self.low_level_trainer.prep_rollout()
+                # [수정] (n_threads, n_agents, dim) -> (n_threads * n_agents, dim)으로 reshape
+        buffer = self.low_level_buffer
+        step = buffer.step
+        
+        share_obs_input = buffer.share_obs[step].reshape(-1, buffer.share_obs.shape[-1])
+        obs_input = buffer.obs[step].reshape(-1, buffer.obs.shape[-1])
+        # [수정] rnn_states도 (n_threads * n_agents, recurrent_N * hidden_size) 또는 (n_threads * n_agents, hidden_size)로 reshape
+        # 참고: rnn.py가 (B*N, hidden_size)를 예상하므로 rnn_states.shape[-1]이 hidden_size여야 함 (recurrent_N=1일 때)
+        rnn_states_input = buffer.rnn_states[step].reshape(-1, buffer.rnn_states.shape[-1])
+        rnn_states_critic_input = buffer.rnn_states_critic[step].reshape(-1, buffer.rnn_states_critic.shape[-1])
+        masks_input = buffer.masks[step].reshape(-1, buffer.masks.shape[-1])
+
         value, action, action_log_prob, rnn_states, rnn_states_critic \
-            = self.low_level_trainer.policy.get_actions(self.low_level_buffer.share_obs[self.low_level_buffer.step],
-                                                        self.low_level_buffer.obs[self.low_level_buffer.step],
-                                                        self.low_level_buffer.rnn_states[self.low_level_buffer.step],
-                                                        self.low_level_buffer.rnn_states_critic[self.low_level_buffer.step],
-                                                        self.low_level_buffer.masks[self.low_level_buffer.step])
-        return _t2n(value), _t2n(action), _t2n(action_log_prob), _t2n(rnn_states), _t2n(rnn_states_critic)
+            = self.low_level_trainer.policy.get_actions(share_obs_input,
+                                                        obs_input,
+                                                        rnn_states_input,
+                                                        rnn_states_critic_input,
+                                                        masks_input)
+            
+        # [수정] 정책 출력을 (n_threads, n_agents, dim) 형태로 재구성
+        values = np.array(np.split(_t2n(value), self.n_rollout_threads))
+        actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
+        action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
+        rnn_states = np.array(np.split(_t2n(rnn_states), self.n_rollout_threads))
+        rnn_states_critic = np.array(np.split(_t2n(rnn_states_critic), self.n_rollout_threads))
+        
+        return values, actions, action_log_probs, rnn_states, rnn_states_critic
 
     @torch.no_grad()
     def collect_high_level(self):
         self.high_level_trainer.prep_rollout()
+        # [수정] (n_threads, 1, dim) -> (n_threads, dim)으로 reshape
+        buffer = self.high_level_buffer
+        step = buffer.step
+
+        share_obs_input = buffer.share_obs[step].reshape(-1, buffer.share_obs.shape[-1])
+        obs_input = buffer.obs[step].reshape(-1, buffer.obs.shape[-1])
+        rnn_states_input = buffer.rnn_states[step].reshape(-1, buffer.rnn_states.shape[-1])
+        rnn_states_critic_input = buffer.rnn_states_critic[step].reshape(-1, buffer.rnn_states_critic.shape[-1])
+        masks_input = buffer.masks[step].reshape(-1, buffer.masks.shape[-1])
+
         value, action, action_log_prob, rnn_states, rnn_states_critic \
-            = self.high_level_trainer.policy.get_actions(self.high_level_buffer.share_obs[self.high_level_buffer.step],
-                                                         self.high_level_buffer.obs[self.high_level_buffer.step],
-                                                         self.high_level_buffer.rnn_states[self.high_level_buffer.step],
-                                                         self.high_level_buffer.rnn_states_critic[self.high_level_buffer.step],
-                                                         self.high_level_buffer.masks[self.high_level_buffer.step])
-        return _t2n(value), _t2n(action), _t2n(action_log_prob), _t2n(rnn_states), _t2n(rnn_states_critic)
+            = self.high_level_trainer.policy.get_actions(share_obs_input,
+                                                         obs_input,
+                                                         rnn_states_input,
+                                                         rnn_states_critic_input,
+                                                         masks_input)
+            
+        values = np.array(np.split(_t2n(value), self.n_rollout_threads))
+        actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
+        action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
+        rnn_states = np.array(np.split(_t2n(rnn_states), self.n_rollout_threads))
+        rnn_states_critic = np.array(np.split(_t2n(rnn_states_critic), self.n_rollout_threads))
+        
+        return values, actions, action_log_probs, rnn_states, rnn_states_critic
 
     def insert_low_level(self, data):
         obs, share_obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic = data
         
-        rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
-        rnn_states_critic[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
+        # rnn_states shape: (n_threads, n_agents, hidden_size)
+        rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
+        rnn_states_critic[dones == True] = np.zeros(((dones == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
+        
         masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
-        masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
+        masks[dones == True] = np.float32(0.0)
 
-        self.low_level_buffer.insert(share_obs['low_level'], obs['low_level'], rnn_states, rnn_states_critic, actions,
-                                     action_log_probs, values, rewards['low_level'], masks)
+        # [수정] rewards는 (n_threads,) 모양의 딕셔너리 객체 배열입니다.
+        # low_level 보상만 추출하여 (n_threads, n_agents, 1) 모양으로 변환합니다.
+        low_rewards_list = [r['low_level'] for r in rewards]
+        low_rewards_array = np.array(low_rewards_list) # shape (n_threads, n_agents)
+        low_rewards_reshaped = np.expand_dims(low_rewards_array, axis=-1) # shape (n_threads, n_agents, 1)
 
+        # [수정] rnn_states의 shape (1, 4, 64) -> (1, 4, 1, 64)로 변경
+        rnn_states_expanded = np.expand_dims(rnn_states, axis=2)
+        rnn_states_critic_expanded = np.expand_dims(rnn_states_critic, axis=2)
+
+        self.low_level_buffer.insert(share_obs['low_level'], obs['low_level'], rnn_states_expanded, rnn_states_critic_expanded, actions,
+                                     action_log_probs, values, low_rewards_reshaped, masks)
+        
     def insert_high_level(self, data):
         obs, share_obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic = data
         
-        rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
-        rnn_states_critic[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
+        # rnn_states shape: (n_threads, 1, hidden_size)
+        rnn_states[dones == True] = np.zeros(((dones == True).sum(), 1, self.hidden_size), dtype=np.float32)
+        rnn_states_critic[dones == True] = np.zeros(((dones == True).sum(), 1, self.hidden_size), dtype=np.float32)
+        
         masks = np.ones((self.n_rollout_threads, 1, 1), dtype=np.float32)
-        masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
+        masks[dones == True] = np.float32(0.0)
 
-        self.high_level_buffer.insert(share_obs['high_level'], obs['high_level'], rnn_states, rnn_states_critic, actions,
-                                       action_log_probs, values, rewards['high_level'], masks)
+        # [수정] rewards는 (n_threads,) 모양의 딕셔너리 객체 배열입니다.
+        # high_level 보상만 추출하여 (n_threads, 1, 1) 모양으로 변환합니다.
+        high_rewards_list = [r['high_level'] for r in rewards]
+        high_rewards_array = np.array(high_rewards_list) # shape (n_threads,)
+        # shape (n_threads, 1, 1) (high_level policy는 n_agents=1이므로)
+        high_rewards_reshaped = high_rewards_array.reshape(-1, 1, 1) 
+
+        # [수정] rnn_states의 shape (1, 1, 64) -> (1, 1, 1, 64)로 변경
+        rnn_states_expanded = np.expand_dims(rnn_states, axis=2)
+        rnn_states_critic_expanded = np.expand_dims(rnn_states_critic, axis=2)
+
+        self.high_level_buffer.insert(share_obs['high_level'], obs['high_level'], rnn_states_expanded, rnn_states_critic_expanded, actions,
+                                       action_log_probs, values, high_rewards_reshaped, masks)
 
     def compute_and_train(self):
         # Low Level
         self.low_level_trainer.prep_rollout()
-        next_values_low = self.low_level_trainer.policy.get_values(self.low_level_buffer.share_obs[-1],
-                                                                    self.low_level_buffer.rnn_states_critic[-1],
-                                                                    self.low_level_buffer.masks[-1])
+
+        # [수정] Rollout (get_values)을 위해 입력을 Reshape합니다.
+        buffer = self.low_level_buffer
+        B, N, L, D_rnn = buffer.rnn_states_critic[-1].shape # (1, 4, 1, 64)
+
+        # (B, N, Dim) -> (B*N, Dim)
+        share_obs_input = buffer.share_obs[-1].reshape(-1, buffer.share_obs.shape[-1])
+        # (B, N, L, D_rnn) -> (B*N, L, D_rnn)
+        rnn_states_input = buffer.rnn_states_critic[-1].reshape(-1, L, D_rnn)
+        # (B, N, 1) -> (B*N, 1)
+        masks_input = buffer.masks[-1].reshape(-1, buffer.masks.shape[-1])
+
+        next_values_low = self.low_level_trainer.policy.get_values(share_obs_input,
+                                                                    rnn_states_input,
+                                                                    masks_input)
         next_values_low = _t2n(next_values_low)
         self.low_level_buffer.compute_returns(next_values_low, self.low_level_trainer.value_normalizer)
-        
-        low_level_train_infos = self.low_level_trainer.train(self.low_level_buffer)
-        self.low_level_buffer.after_update()
 
         # High Level
         self.high_level_trainer.prep_rollout()
-        next_values_high = self.high_level_trainer.policy.get_values(self.high_level_buffer.share_obs[-1],
-                                                                      self.high_level_buffer.rnn_states_critic[-1],
-                                                                      self.high_level_buffer.masks[-1])
+
+        # [수정] Rollout (get_values)을 위해 입력을 Reshape합니다.
+        buffer = self.high_level_buffer
+        B, N, L, D_rnn = buffer.rnn_states_critic[-1].shape # (1, 1, 1, 64)
+
+        # (B, N, Dim) -> (B*N, Dim)
+        share_obs_input = buffer.share_obs[-1].reshape(-1, buffer.share_obs.shape[-1])
+        # (B, N, L, D_rnn) -> (B*N, L, D_rnn)
+        rnn_states_input = buffer.rnn_states_critic[-1].reshape(-1, L, D_rnn)
+        # (B, N, 1) -> (B*N, 1)
+        masks_input = buffer.masks[-1].reshape(-1, buffer.masks.shape[-1])
+
+        next_values_high = self.high_level_trainer.policy.get_values(share_obs_input,
+                                                                      rnn_states_input,
+                                                                      masks_input)
         next_values_high = _t2n(next_values_high)
         self.high_level_buffer.compute_returns(next_values_high, self.high_level_trainer.value_normalizer)
-        
-        high_level_train_infos = self.high_level_trainer.train(self.high_level_buffer)
-        self.high_level_buffer.after_update()
