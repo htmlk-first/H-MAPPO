@@ -29,6 +29,7 @@ class H_UAVRunner(Runner):
         self.recurrent_N = self.all_args.recurrent_N
         self.use_wandb = self.all_args.use_wandb
         self.log_interval = self.all_args.log_interval
+        self.save_interval = self.all_args.save_interval
 
         # dir
         self.run_dir = config["run_dir"]
@@ -88,12 +89,16 @@ class H_UAVRunner(Runner):
             self.compute_and_train()
             
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
+            
+            if (episode % self.save_interval == 0 or episode == episodes - 1):
+                self.save()
+                
             if (episode % self.log_interval == 0):
                 end = time.time()
                 print(f"\n Episode {episode}/{episodes}, total num timesteps {total_num_steps} || FPS {int(total_num_steps / (end - start))}")
 
     def warmup(self):
-        # [수정] DummyVecEnv.reset()은 (obs, infos) 튜플을 반환합니다.
+        # DummyVecEnv.reset()은 (obs, infos) 튜플을 반환합니다.
         full_obs_tuple = self.envs.reset()
         # obs, share_obs를 얻기 위해 튜플의 첫 번째 요소(obs)만 전달합니다.
         obs, share_obs = self.unpack_obs(full_obs_tuple[0])
@@ -245,7 +250,7 @@ class H_UAVRunner(Runner):
         # shape (n_threads, 1, 1) (high_level policy는 n_agents=1이므로)
         high_rewards_reshaped = high_rewards_array.reshape(-1, 1, 1) 
 
-        # [수정] rnn_states의 shape (1, 1, 64) -> (1, 1, 1, 64)로 변경
+        # rnn_states의 shape (1, 1, 64) -> (1, 1, 1, 64)로 변경
         rnn_states_expanded = np.expand_dims(rnn_states, axis=2)
         rnn_states_critic_expanded = np.expand_dims(rnn_states_critic, axis=2)
 
@@ -256,7 +261,7 @@ class H_UAVRunner(Runner):
         # Low Level
         self.low_level_trainer.prep_rollout()
 
-        # [수정] Rollout (get_values)을 위해 입력을 Reshape합니다.
+        # Rollout (get_values)을 위해 입력을 Reshape합니다.
         buffer = self.low_level_buffer
         B, N, L, D_rnn = buffer.rnn_states_critic[-1].shape # (1, 4, 1, 64)
 
@@ -276,7 +281,7 @@ class H_UAVRunner(Runner):
         # High Level
         self.high_level_trainer.prep_rollout()
 
-        # [수정] Rollout (get_values)을 위해 입력을 Reshape합니다.
+        # Rollout (get_values)을 위해 입력을 Reshape합니다.
         buffer = self.high_level_buffer
         B, N, L, D_rnn = buffer.rnn_states_critic[-1].shape # (1, 1, 1, 64)
 
@@ -292,3 +297,24 @@ class H_UAVRunner(Runner):
                                                                       masks_input)
         next_values_high = _t2n(next_values_high)
         self.high_level_buffer.compute_returns(next_values_high, self.high_level_trainer.value_normalizer)
+        
+    def save(self):
+        """Save high-level and low-level policies."""
+        
+        # 1. Save High-Level Policy
+        policy_actor_high = self.high_level_trainer.policy.actor
+        torch.save(policy_actor_high.state_dict(), str(self.save_dir) + "/high_level_actor.pt")
+        policy_critic_high = self.high_level_trainer.policy.critic
+        torch.save(policy_critic_high.state_dict(), str(self.save_dir) + "/high_level_critic.pt")
+        if self.high_level_trainer._use_valuenorm:
+            policy_vnorm_high = self.high_level_trainer.value_normalizer
+            torch.save(policy_vnorm_high.state_dict(), str(self.save_dir) + "/high_level_vnorm.pt")
+
+        # 2. Save Low-Level Policy
+        policy_actor_low = self.low_level_trainer.policy.actor
+        torch.save(policy_actor_low.state_dict(), str(self.save_dir) + "/low_level_actor.pt")
+        policy_critic_low = self.low_level_trainer.policy.critic
+        torch.save(policy_critic_low.state_dict(), str(self.save_dir) + "/low_level_critic.pt")
+        if self.low_level_trainer._use_valuenorm:
+            policy_vnorm_low = self.low_level_trainer.value_normalizer
+            torch.save(policy_vnorm_low.state_dict(), str(self.save_dir) + "/low_level_vnorm.pt")

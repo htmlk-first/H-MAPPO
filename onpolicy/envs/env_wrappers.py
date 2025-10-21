@@ -697,7 +697,7 @@ class DummyVecEnv(ShareVecEnv):
         else:
             raise NotImplementedError
     
-    # [수정] 아래 env_method 함수 전체를 추가하세요.
+    # 아래 env_method 함수 전체를 추가하세요.
     def env_method(self, method_name, *method_args, **method_kwargs):
         """
         vec_env 내의 모든 환경에 대해 특정 메서드를 호출합니다.

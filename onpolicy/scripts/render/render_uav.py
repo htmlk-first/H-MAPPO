@@ -78,7 +78,7 @@ def main(args):
         torch.set_num_threads(all_args.n_training_threads)
 
     # env setup
-    # [수정] make_render_env 함수를 사용합니다.
+    # make_render_env 함수를 사용합니다.
     envs = make_render_env(all_args)
     
     # --- H-MAPPO 정책 네트워크 설정 (train_uav.py 로직) ---
@@ -162,7 +162,7 @@ def main(args):
                 high_masks_input = high_masks.reshape(-1, 1)
 
                 high_actions, high_rnn_states_out = high_level_policy.act(
-                    obs=check(high_obs_input).float(),
+                    obs=check(np.array(high_obs_input)).float(),
                     rnn_states_actor=check(high_rnn_states_input).float(),
                     masks=check(high_masks_input).float(),
                     deterministic=True
@@ -181,7 +181,7 @@ def main(args):
             low_masks_input = masks.reshape(-1, 1)
             
             low_actions, low_rnn_states_out = low_level_policy.act(
-                obs=check(low_obs_input.reshape(all_args.num_agents, -1)).float(),
+                obs=check(np.array(low_obs_input).reshape(all_args.num_agents, -1)).float(),
                 rnn_states_actor=check(low_rnn_states_input).float(),
                 masks=check(low_masks_input).float(),
                 deterministic=True
@@ -192,7 +192,7 @@ def main(args):
         # envs.step()은 (n_threads, n_agents, act_dim) 형태의 입력을 기대합니다.
         full_obs, rewards, dones, infos = envs.step([low_actions_np]) # [low_actions_np]는 (1, 4, act_dim)
 
-        dones_env = np.all(dones, axis=1)
+        dones_env = dones
         if np.all(dones_env):
             print("Episode Finished.")
             break

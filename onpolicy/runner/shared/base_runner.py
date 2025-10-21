@@ -66,7 +66,7 @@ class Runner(object):
         from onpolicy.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
         from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
 
-        # [수정] 딕셔너리 형태의 관측/행동 공간을 처리하도록 로직 변경
+        # 딕셔너리 형태의 관측/행동 공간을 처리하도록 로직 변경
         obs_space = self.envs.observation_space
         share_obs_space = self.envs.share_observation_space
         act_space = self.envs.action_space

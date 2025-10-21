@@ -45,7 +45,7 @@ class UAVEnv(gym.Env):
         self.energy_comm_trad = 0.01
         self.energy_comm_sem = 0.05
 
-        # 5. [핵심 수정] 표준 gym.spaces를 사용하여 계층적 관측/행동 공간 정의
+        # 5. 표준 gym.spaces를 사용하여 계층적 관측/행동 공간 정의
         # --- 상위 레벨 공간 정의 ---
         high_obs_dim = (self.num_pois * 2) + (self.num_uavs * 3)
         high_obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(high_obs_dim,), dtype=np.float32)
@@ -89,7 +89,7 @@ class UAVEnv(gym.Env):
         low_level_obs = self._get_low_level_obs()
         high_level_obs = self._get_high_level_obs()
         
-        # [수정] observation_space에 맞는 딕셔너리 구조로 반환
+        # observation_space에 맞는 딕셔너리 구조로 반환
         return {
             'high_level': high_level_obs,
             'low_level': low_level_obs
@@ -245,12 +245,21 @@ class UAVEnv(gym.Env):
 
         if self.uav_goals is not None:
             for i, goal in enumerate(self.uav_goals):
-                self.goal_plots[i].set_data(goal[0], goal[1])
+                self.goal_plots[i].set_data([goal[0]], [goal[1]])
 
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
-        plt.pause(0.01)
-
+        if mode == 'human':
+            plt.pause(0.01)
+            return None
+        
+        elif mode == 'rgb_array':
+            w, h = self.fig.canvas.get_width_height()
+            buf = self.fig.canvas.tostring_argb()
+            image_array = np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)
+            image_array_rgb = image_array[:, :, 1:] 
+            return image_array_rgb
+        
     def close(self):
         if self.fig is not None:
             plt.close(self.fig)
