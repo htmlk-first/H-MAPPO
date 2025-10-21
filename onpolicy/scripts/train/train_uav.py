@@ -17,7 +17,7 @@ from onpolicy.envs.env_wrappers import SubprocVecEnv, DummyVecEnv
 def make_train_env(all_args):
     def get_env_fn(rank):
         def init_env():
-            # [수정] args를 전달하여 환경을 생성합니다.
+            # args를 전달하여 환경을 생성합니다.
             env = UAVEnv(all_args)
             env.seed(all_args.seed + rank * 1000)
             return env
@@ -132,7 +132,7 @@ def main(args):
     envs = make_train_env(all_args)
     eval_envs = make_eval_env(all_args) if all_args.use_eval else None
     
-    # [수정] config 딕셔너리 생성
+    # config 딕셔너리 생성
     config = {
         "all_args": all_args,
         "envs": envs,
@@ -140,7 +140,7 @@ def main(args):
         "device": device,
     }
 
-    # [수정] Runner를 H_UAVRunner로 변경하고, 계층적 정책을 생성
+    # Runner를 H_UAVRunner로 변경하고, 계층적 정책을 생성
     from onpolicy.runner.shared.h_uav_runner import H_UAVRunner as Runner
     from onpolicy.algorithms.r_mappo.r_mappo import R_MAPPO as TrainAlgo
     from onpolicy.algorithms.r_mappo.algorithm.rMAPPOPolicy import R_MAPPOPolicy as Policy
@@ -189,7 +189,7 @@ def main(args):
                                      high_level_share_obs_space,
                                      high_level_act_space)
 
-    # [수정] Runner에 두 레벨의 trainer와 buffer를 리스트로 전달
+    # Runner에 두 레벨의 trainer와 buffer를 리스트로 전달
     config["trainer"] = [high_level_trainer, low_level_trainer]
     config["buffer"] = [high_level_buffer, low_level_buffer]
     

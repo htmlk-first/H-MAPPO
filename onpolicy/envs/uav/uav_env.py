@@ -2,10 +2,9 @@ import gym
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle
-from gym import spaces # gym.spaces를 사용하도록 명시
+from gym import spaces
 from sklearn.cluster import KMeans
 
-# entities.py로부터 모든 클래스를 import 합니다.
 from .entities import UAV, Jammer, PointOfInterest
 
 class UAVEnv(gym.Env):

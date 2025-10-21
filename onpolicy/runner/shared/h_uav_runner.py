@@ -151,14 +151,14 @@ class H_UAVRunner(Runner):
     @torch.no_grad()
     def collect_low_level(self):
         self.low_level_trainer.prep_rollout()
-                # [수정] (n_threads, n_agents, dim) -> (n_threads * n_agents, dim)으로 reshape
+        # (n_threads, n_agents, dim) -> (n_threads * n_agents, dim)으로 reshape
         buffer = self.low_level_buffer
         step = buffer.step
         
         share_obs_input = buffer.share_obs[step].reshape(-1, buffer.share_obs.shape[-1])
         obs_input = buffer.obs[step].reshape(-1, buffer.obs.shape[-1])
-        # [수정] rnn_states도 (n_threads * n_agents, recurrent_N * hidden_size) 또는 (n_threads * n_agents, hidden_size)로 reshape
-        # 참고: rnn.py가 (B*N, hidden_size)를 예상하므로 rnn_states.shape[-1]이 hidden_size여야 함 (recurrent_N=1일 때)
+        # rnn_states도 (n_threads * n_agents, recurrent_N * hidden_size) 또는 (n_threads * n_agents, hidden_size)로 reshape
+        # rnn.py가 (B*N, hidden_size)를 예상하므로 rnn_states.shape[-1]이 hidden_size여야 함 (recurrent_N=1일 때)
         rnn_states_input = buffer.rnn_states[step].reshape(-1, buffer.rnn_states.shape[-1])
         rnn_states_critic_input = buffer.rnn_states_critic[step].reshape(-1, buffer.rnn_states_critic.shape[-1])
         masks_input = buffer.masks[step].reshape(-1, buffer.masks.shape[-1])
@@ -170,7 +170,7 @@ class H_UAVRunner(Runner):
                                                         rnn_states_critic_input,
                                                         masks_input)
             
-        # [수정] 정책 출력을 (n_threads, n_agents, dim) 형태로 재구성
+        # 정책 출력을 (n_threads, n_agents, dim) 형태로 재구성
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
         action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
@@ -182,7 +182,7 @@ class H_UAVRunner(Runner):
     @torch.no_grad()
     def collect_high_level(self):
         self.high_level_trainer.prep_rollout()
-        # [수정] (n_threads, 1, dim) -> (n_threads, dim)으로 reshape
+        # (n_threads, 1, dim) -> (n_threads, dim)으로 reshape
         buffer = self.high_level_buffer
         step = buffer.step
 
@@ -217,13 +217,12 @@ class H_UAVRunner(Runner):
         masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
         masks[dones == True] = np.float32(0.0)
 
-        # [수정] rewards는 (n_threads,) 모양의 딕셔너리 객체 배열입니다.
         # low_level 보상만 추출하여 (n_threads, n_agents, 1) 모양으로 변환합니다.
         low_rewards_list = [r['low_level'] for r in rewards]
         low_rewards_array = np.array(low_rewards_list) # shape (n_threads, n_agents)
         low_rewards_reshaped = np.expand_dims(low_rewards_array, axis=-1) # shape (n_threads, n_agents, 1)
 
-        # [수정] rnn_states의 shape (1, 4, 64) -> (1, 4, 1, 64)로 변경
+        # rnn_states의 shape (1, 4, 64) -> (1, 4, 1, 64)로 변경
         rnn_states_expanded = np.expand_dims(rnn_states, axis=2)
         rnn_states_critic_expanded = np.expand_dims(rnn_states_critic, axis=2)
 
@@ -240,7 +239,6 @@ class H_UAVRunner(Runner):
         masks = np.ones((self.n_rollout_threads, 1, 1), dtype=np.float32)
         masks[dones == True] = np.float32(0.0)
 
-        # [수정] rewards는 (n_threads,) 모양의 딕셔너리 객체 배열입니다.
         # high_level 보상만 추출하여 (n_threads, 1, 1) 모양으로 변환합니다.
         high_rewards_list = [r['high_level'] for r in rewards]
         high_rewards_array = np.array(high_rewards_list) # shape (n_threads,)

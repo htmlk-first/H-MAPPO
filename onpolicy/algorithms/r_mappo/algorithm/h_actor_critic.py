@@ -18,8 +18,8 @@ class H_Actor(nn.Module):
         self.num_agents = args.num_agents
         obs_shape = get_shape_from_obs_space(obs_space)
         
-        if self.num_agents == 1: # High-level policy
-            # [수정] use_attn=False 인자 삭제
+        if self.num_agents == 1:
+            # High-level policy
             self.base = MLPBase(args, obs_shape)
             gru_input_dim = self.base.output_dim
         else: # Low-level policy
@@ -27,7 +27,6 @@ class H_Actor(nn.Module):
             other_uav_dim = 2 * (self.num_agents - 1)
             goal_dim = 2
             
-            # [수정] use_attn=False 인자 삭제
             self.self_encoder = MLPBase(args, (self_obs_dim,))
             self.other_uav_encoder = MLPBase(args, (other_uav_dim,))
             self.goal_encoder = MLPBase(args, (goal_dim,))
@@ -48,9 +47,11 @@ class H_Actor(nn.Module):
         if available_actions is not None:
             available_actions = check(available_actions).to(**self.tpdv)
         
-        if self.base is not None: # High-level
+        if self.base is not None:
+            # High-level
             actor_features = self.base(obs)
-        else: # Low-level
+        else:
+            # Low-level
             other_uav_obs_dim = 2 * (self.num_agents - 1)
             self_obs = obs[:, :4]
             other_uav_obs = obs[:, 4 : 4 + other_uav_obs_dim]
@@ -78,7 +79,7 @@ class H_Critic(nn.Module):
         self.tpdv = dict(dtype=torch.float32, device=device)
         share_obs_shape = get_shape_from_obs_space(share_obs_space)
         
-        # [수정] use_attn 인자가 없으므로 MLPBase 호출을 그대로 사용
+        # use_attn 인자가 없으므로 MLPBase 호출을 그대로 사용
         self.base = MLPBase(args, share_obs_shape)
 
         if self._use_recurrent_policy:
