@@ -138,6 +138,11 @@ class ShareVecEnv(ABC):
 
 
 def worker(remote, parent_remote, env_fn_wrapper):
+    """
+    A function that runs in a separate process.
+    It creates an environment and listens for commands from the main process
+    via a Pipe (`remote`).
+    """
     parent_remote.close()
     env = env_fn_wrapper.x()
     while True:
@@ -175,6 +180,7 @@ def worker(remote, parent_remote, env_fn_wrapper):
 
 
 class GuardSubprocVecEnv(ShareVecEnv):
+    # ... (Implementation of a guarded subprocess vec env) ...
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -196,6 +202,7 @@ class GuardSubprocVecEnv(ShareVecEnv):
         ShareVecEnv.__init__(self, len(env_fns), observation_space,
                              share_observation_space, action_space)
 
+    # ... (step_async, step_wait, reset, etc.) ...
     def step_async(self, actions):
 
         for remote, action in zip(self.remotes, actions):
@@ -232,6 +239,7 @@ class GuardSubprocVecEnv(ShareVecEnv):
         self.closed = True
 
 class SubprocVecEnv(ShareVecEnv):
+    # ... (Standard subprocess vec env) ...
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -253,6 +261,7 @@ class SubprocVecEnv(ShareVecEnv):
         ShareVecEnv.__init__(self, len(env_fns), observation_space,
                              share_observation_space, action_space)
 
+    # ... (step_async, step_wait, reset, etc.) ...
     def step_async(self, actions):
         for remote, action in zip(self.remotes, actions):
             remote.send(('step', action))
@@ -296,6 +305,7 @@ class SubprocVecEnv(ShareVecEnv):
 
 
 def shareworker(remote, parent_remote, env_fn_wrapper):
+    """Worker for environments that return (obs, share_obs, ...)"""
     parent_remote.close()
     env = env_fn_wrapper.x()
     while True:
@@ -337,6 +347,7 @@ def shareworker(remote, parent_remote, env_fn_wrapper):
 
 
 class ShareSubprocVecEnv(ShareVecEnv):
+    # ... (Implementation for ShareSubprocVecEnv using shareworker) ...
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -358,6 +369,7 @@ class ShareSubprocVecEnv(ShareVecEnv):
         ShareVecEnv.__init__(self, len(env_fns), observation_space,
                              share_observation_space, action_space)
 
+    # ... (step_async, step_wait, reset, etc.) ...
     def step_async(self, actions):
         for remote, action in zip(self.remotes, actions):
             remote.send(('step', action))
@@ -395,6 +407,7 @@ class ShareSubprocVecEnv(ShareVecEnv):
 
 
 def choosesimpleworker(remote, parent_remote, env_fn_wrapper):
+    # ... (Worker for environments with reset(choose) but no share_obs) ...
     parent_remote.close()
     env = env_fn_wrapper.x()
     while True:
@@ -426,6 +439,7 @@ def choosesimpleworker(remote, parent_remote, env_fn_wrapper):
 
 
 class ChooseSimpleSubprocVecEnv(ShareVecEnv):
+    # ... (Implementation for ChooseSimpleSubprocVecEnv) ...
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -446,6 +460,7 @@ class ChooseSimpleSubprocVecEnv(ShareVecEnv):
         ShareVecEnv.__init__(self, len(env_fns), observation_space,
                              share_observation_space, action_space)
 
+    # ... (step_async, step_wait, reset(choose), etc.) ...
     def step_async(self, actions):
         for remote, action in zip(self.remotes, actions):
             remote.send(('step', action))
@@ -489,6 +504,7 @@ class ChooseSimpleSubprocVecEnv(ShareVecEnv):
 
 
 def chooseworker(remote, parent_remote, env_fn_wrapper):
+    # ... (Worker for environments with reset(choose) AND share_obs) ...
     parent_remote.close()
     env = env_fn_wrapper.x()
     while True:
@@ -516,6 +532,7 @@ def chooseworker(remote, parent_remote, env_fn_wrapper):
 
 
 class ChooseSubprocVecEnv(ShareVecEnv):
+    # ... (Implementation for ChooseSubprocVecEnv) ...
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -537,6 +554,7 @@ class ChooseSubprocVecEnv(ShareVecEnv):
         ShareVecEnv.__init__(self, len(env_fns), observation_space,
                              share_observation_space, action_space)
 
+    # ... (step_async, step_wait, reset(choose), etc.) ...
     def step_async(self, actions):
         for remote, action in zip(self.remotes, actions):
             remote.send(('step', action))
@@ -574,6 +592,8 @@ class ChooseSubprocVecEnv(ShareVecEnv):
 
 
 def chooseguardworker(remote, parent_remote, env_fn_wrapper):
+    # ... (Worker for guarded, reset(choose), no share_obs) ...
+    
     parent_remote.close()
     env = env_fn_wrapper.x()
     while True:
@@ -599,6 +619,7 @@ def chooseguardworker(remote, parent_remote, env_fn_wrapper):
 
 
 class ChooseGuardSubprocVecEnv(ShareVecEnv):
+    # ... (Implementation for ChooseGuardSubprocVecEnv) ...
     def __init__(self, env_fns, spaces=None):
         """
         envs: list of gym environments to run in subprocesses
@@ -657,7 +678,15 @@ class ChooseGuardSubprocVecEnv(ShareVecEnv):
 
 # single env
 class DummyVecEnv(ShareVecEnv):
+    """
+    A vectorized environment wrapper that runs multiple environments sequentially
+    in the same process. Used for debugging or when n_rollout_threads = 1.
+    
+    **This is the wrapper used by train_uav.py and render_uav.py
+    when n_rollout_threads is 1.**
+    """
     def __init__(self, env_fns):
+        # Create all environment instances in the main process
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
         ShareVecEnv.__init__(self, len(
@@ -671,10 +700,9 @@ class DummyVecEnv(ShareVecEnv):
         results = [env.step(a) for (a, env) in zip(self.actions, self.envs)]
         obs, rews, dones, infos = zip(*results)
         
-        # When an episode ends, gymnasium's standard is that the final 'obs' is returned,
-        # and reset must be called by the user *before* the next step.
-        # The original code's logic to auto-reset inside step_wait is non-standard and can cause issues.
-        # We will rely on the runner to handle resets based on the 'dones' signal.
+        # Note: The original auto-reset logic on 'done' is removed.
+        # The runner (e.g., H_UAVRunner) is responsible for detecting 'dones'
+        # and calling 'reset()' when needed.
         
         self.actions = None
         return np.array(obs), np.array(rews), np.array(dones), infos
@@ -697,29 +725,37 @@ class DummyVecEnv(ShareVecEnv):
         else:
             raise NotImplementedError
     
-    # 아래 env_method 함수 전체를 추가하세요.
     def env_method(self, method_name, *method_args, **method_kwargs):
         """
-        vec_env 내의 모든 환경에 대해 특정 메서드를 호출합니다.
-        H-MAPPO가 'set_goals'를 호출하기 위해 필요합니다.
+        Calls a specific method on each underlying environment.
+        This is crucial for H-MAPPO, which needs to call `set_goals`
+        on the `UAVEnv` instance.
+        
+        Example: `vec_env.env_method('set_goals', high_level_actions)`
+        
+        :param method_name: (str) The name of the method to call (e.g., 'set_goals').
+        :param method_args: (tuple) Positional arguments for the method.
+                            Assumed to be batched (e.g., `high_level_actions`
+                            where `high_level_actions[i]` is for `env[i]`).
+        :param method_kwargs: (dict) Keyword arguments for the method.
+        :return: (list) A list of results from each environment.
         """
         results = []
         for i, env in enumerate(self.envs):
-            # 환경(env)에서 'set_goals' 메서드를 찾습니다.
+            # Get the method (e.g., env.set_goals)
             method = getattr(env, method_name)
             
-            # 이 환경(i)에 해당하는 인자(arguments)를 추출합니다.
-            # 예: high_actions[i]
+            # Extract the arguments specific to this env[i]
+            # e.g., high_level_actions[i]
             env_specific_args = [arg[i] for arg in method_args]
             
-            # env.set_goals(high_actions[i])를 호출합니다.
+            # Call the method (e.g., env.set_goals(high_level_actions[i]))
             result = method(*env_specific_args, **method_kwargs)
             results.append(result)
         return results
-    
-
 
 class ShareDummyVecEnv(ShareVecEnv):
+    # ... (DummyVecEnv for envs returning (obs, share_obs, ...)) ...
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
@@ -766,6 +802,7 @@ class ShareDummyVecEnv(ShareVecEnv):
 
 
 class ChooseDummyVecEnv(ShareVecEnv):
+    # ... (DummyVecEnv for envs with reset(choose) and share_obs) ...
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]
@@ -773,6 +810,7 @@ class ChooseDummyVecEnv(ShareVecEnv):
             env_fns), env.observation_space, env.share_observation_space, env.action_space)
         self.actions = None
 
+    # ... (step_async, step_wait, reset(choose)) ...
     def step_async(self, actions):
         self.actions = actions
 
@@ -803,6 +841,7 @@ class ChooseDummyVecEnv(ShareVecEnv):
             raise NotImplementedError
 
 class ChooseSimpleDummyVecEnv(ShareVecEnv):
+    # ... (DummyVecEnv for envs with reset(choose) but no share_obs) ...
     def __init__(self, env_fns):
         self.envs = [fn() for fn in env_fns]
         env = self.envs[0]

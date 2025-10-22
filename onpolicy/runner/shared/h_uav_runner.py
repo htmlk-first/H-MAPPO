@@ -9,100 +9,139 @@ def _t2n(x):
     return x.detach().cpu().numpy()
 
 class H_UAVRunner(Runner):
+    """
+    Runner class specifically designed for Hierarchical MAPPO (H-MAPPO) in the UAV environment.
+    It manages two levels of policies: a high-level policy for setting goals and
+    a low-level policy for executing actions based on those goals.
+    """
     def __init__(self, config):
-        # BaseRunner의 필수 설정들을 직접 가져와 초기화
+        """
+        Initialize the H_UAVRunner.
+        :param config: (dict) Configuration dictionary containing arguments, envs, trainers, buffers, etc.
+        """
+        
+        # --- Initialize essential components from the base Runner ---
+        # Instead of calling super().__init__, we directly assign necessary attributes
+        # because H-MAPPO requires separate trainers and buffers for high/low levels,
+        # which are passed directly in the config, unlike the base Runner setup.
         self.all_args = config['all_args']
-        self.envs = config['envs']
+        self.envs = config['envs']  # Vectorized environment (e.g., DummyVecEnv)
         self.eval_envs = config['eval_envs']
         self.device = config['device']
-        self.num_agents = config['num_agents']
+        self.num_agents = config['num_agents']  # Number of low-level agents (UAVs)
 
-        # parameters
+        # --- Basic parameters ---
         self.env_name = self.all_args.env_name
         self.algorithm_name = self.all_args.algorithm_name
         self.experiment_name = self.all_args.experiment_name
         self.use_centralized_V = self.all_args.use_centralized_V
-        self.num_env_steps = self.all_args.num_env_steps
-        self.episode_length = self.all_args.episode_length
-        self.n_rollout_threads = self.all_args.n_rollout_threads
-        self.hidden_size = self.all_args.hidden_size
-        self.recurrent_N = self.all_args.recurrent_N
-        self.use_wandb = self.all_args.use_wandb
-        self.log_interval = self.all_args.log_interval
-        self.save_interval = self.all_args.save_interval
+        self.num_env_steps = self.all_args.num_env_steps # Total training steps
+        self.episode_length = self.all_args.episode_length # Max steps per episode
+        self.n_rollout_threads = self.all_args.n_rollout_threads # Number of parallel envs
+        self.hidden_size = self.all_args.hidden_size # RNN hidden state size
+        self.recurrent_N = self.all_args.recurrent_N # Number of RNN layers
+        self.use_wandb = self.all_args.use_wandb # Use Weights & Biases for logging
+        self.log_interval = self.all_args.log_interval # Frequency for logging training info
+        self.save_interval = self.all_args.save_interval # Frequency for saving models
 
-        # dir
+        # --- Directories for logging and saving ---
         self.run_dir = config["run_dir"]
         self.log_dir = str(self.run_dir / 'logs')
         if not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir)
-        self.writter = SummaryWriter(self.log_dir)
+        self.writter = SummaryWriter(self.log_dir)  # TensorboardX writer
         self.save_dir = str(self.run_dir / 'models')
         if not os.path.exists(self.save_dir):
             os.makedirs(self.save_dir)
 
-        # H-MAPPO를 위한 trainer와 buffer 리스트를 직접 할당
+        # --- H-MAPPO specific components ---
+        # The config provides a list of trainers and buffers: [high_level, low_level]
+        self.trainer = config['trainer']
         self.trainer = config['trainer']
         self.buffer = config['buffer']
         
+        # Assign high and low level trainers and buffers
         self.high_level_trainer = self.trainer[0]
         self.high_level_buffer = self.buffer[0]
         self.low_level_trainer = self.trainer[1]
         self.low_level_buffer = self.buffer[1]
 
+        # Frequency at which the high-level policy acts
         self.high_level_timestep = self.all_args.high_level_timestep
 
     def run(self):
-        self.warmup()   
+        """
+        Main training loop for H-MAPPO.
+        Collects data using both policies, performs training updates.
+        """
+        self.warmup()   # Initialize buffer with the first observation
 
         start = time.time()
+        # Calculate total number of episodes
         episodes = int(self.num_env_steps) // self.episode_length // self.n_rollout_threads
 
         for episode in range(episodes):
+            # Apply learning rate decay if enabled
             if self.all_args.use_linear_lr_decay:
                 self.high_level_trainer.policy.lr_decay(episode, episodes)
                 self.low_level_trainer.policy.lr_decay(episode, episodes)
 
-            # 에피소드 루프 시작
+            # --- Start episode rollout ---
             for step in range(self.episode_length):
-                # Sample actions
+                # 1. Sample low-level actions (executed at every step)
                 low_values, low_actions, low_action_log_probs, low_rnn_states, low_rnn_states_critic = self.collect_low_level()
 
+                # 2. Sample high-level actions (executed periodically)
                 high_actions = None
                 if step % self.high_level_timestep == 0:
                     high_values, high_actions, high_action_log_probs, high_rnn_states, high_rnn_states_critic = self.collect_high_level()
+                    
+                    # Call the environment's method to set goals based on high-level actions
+                    # Requires the vec_env (self.envs) to have an `env_method` implementation
                     self.envs.env_method('set_goals', high_actions)
                 
-                # Observe reward and next obs
+                # 3. Step the environment with low-level actions
+                # envs.step() returns stacked obs, rewards, dones, infos for all threads
                 full_obs, rewards, dones, infos = self.envs.step(low_actions)
 
-                # Unpack and restructure obs
+                # 4. Unpack observations into high/low levels and obs/share_obs
                 obs, share_obs = self.unpack_obs(full_obs)
                 
+                # 5. Insert low-level data into the low-level buffer
                 low_data = obs, share_obs, rewards, dones, infos, low_values, low_actions, low_action_log_probs, low_rnn_states, low_rnn_states_critic
                 self.insert_low_level(low_data)
 
+                # 6. Insert high-level data into the high-level buffer (only when high-level acted)
                 if step % self.high_level_timestep == 0:
                     high_data = obs, share_obs, rewards, dones, infos, high_values, high_actions, high_action_log_probs, high_rnn_states, high_rnn_states_critic
                     self.insert_high_level(high_data)
-
+            # --- End episode rollout ---
+            
+            # 7. Compute returns (GAE) and perform training updates for both levels
             self.compute_and_train()
             
+            # Calculate total steps taken
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
             
+            # Save models periodically
             if (episode % self.save_interval == 0 or episode == episodes - 1):
                 self.save()
-                
+            
+            # Log training information periodically
             if (episode % self.log_interval == 0):
                 end = time.time()
                 print(f"\n Episode {episode}/{episodes}, total num timesteps {total_num_steps} || FPS {int(total_num_steps / (end - start))}")
 
     def warmup(self):
-        # DummyVecEnv.reset()은 (obs, infos) 튜플을 반환합니다.
+        """
+        Initializes the buffers with the first observation from the environment.
+        """
+        # DummyVecEnv.reset() returns a tuple (obs, infos).
         full_obs_tuple = self.envs.reset()
-        # obs, share_obs를 얻기 위해 튜플의 첫 번째 요소(obs)만 전달합니다.
+        # Pass only the observation part to unpack_obs.
         obs, share_obs = self.unpack_obs(full_obs_tuple[0])
         
+        # Store initial observations in both buffers at step 0.
         self.low_level_buffer.share_obs[0] = share_obs['low_level'].copy()
         self.low_level_buffer.obs[0] = obs['low_level'].copy()
 
@@ -110,64 +149,82 @@ class H_UAVRunner(Runner):
         self.high_level_buffer.obs[0] = obs['high_level'].copy()
         
     def unpack_obs(self, full_obs_stacked):
-        # full_obs_stacked는 (n_rollout_threads, ) 형태이며, 
-        # 각 요소는 {'high_level': ..., 'low_level': ...} 딕셔너리입니다.
-        # (n_rollout_threads=1일 때) full_obs_stacked.shape = (1,)
+        """
+        Unpacks the observation dictionary received from the environment
+        into separate observation (obs) and shared observation (share_obs)
+        dictionaries for both high and low levels.
         
-        # 1. High-level obs/share_obs (둘은 동일하며, 이미 중앙 집중형임)
-        # d['high_level']의 shape: (1, high_obs_dim)
-        # high_level_obs의 shape: (n_rollout_threads, 1, high_obs_dim)
+        :param full_obs_stacked: (np.ndarray) Array of observation dictionaries
+                                 from the vectorized environment. Shape: (n_rollout_threads,).
+                                 Each element is {'high_level': ..., 'low_level': ...}.
+        :return: (dict, dict) obs_dict, share_obs_dict
+        """
+        
+        # full_obs_stacked shape example: (1,) if n_rollout_threads=1
+        
+        # 1. High-level obs/share_obs (These are identical and already centralized)
+        # d['high_level'] shape: (1, high_obs_dim)
+        # high_level_obs shape: (n_rollout_threads, 1, high_obs_dim)
         high_level_obs = np.array([d['high_level'] for d in full_obs_stacked])
 
-        # 2. Low-level obs (개별 에이전트 관측)
-        # d['low_level']의 shape: (num_agents, low_obs_dim)
-        # obs_low_level_stacked의 shape: (n_rollout_threads, num_agents, low_obs_dim)
+        # 2. Low-level obs (Individual agent observations)
+        # d['low_level'] shape: (num_agents, low_obs_dim)
+        # obs_low_level_stacked shape: (n_rollout_threads, num_agents, low_obs_dim)
         obs_low_level_stacked = np.array([d['low_level'] for d in full_obs_stacked])
 
-        # 3. Low-level share_obs (모든 에이전트의 관측을 하나로 합친 중앙 집중형 관측)
-        # uav_env.py에 정의된 share_low_obs_dim = low_obs_dim * num_uavs
+        # 3. Low-level share_obs (Centralized observation for the critic)
+        # This is constructed by concatenating all low-level observations.
+        # Expected dim: share_low_obs_dim = low_obs_dim * num_uavs (as defined in uav_env.py)
         
         n_rollout_threads = len(full_obs_stacked)
         
-        # (n_threads, num_agents, low_obs_dim) -> (n_threads, num_agents * low_obs_dim)
+        # Flatten obs across agents: (n_threads, num_agents, low_obs_dim) -> (n_threads, num_agents * low_obs_dim)
         share_obs_low_level_flat = obs_low_level_stacked.reshape(n_rollout_threads, -1)
         
-        # (n_threads, num_agents * low_obs_dim) -> (n_threads, 1, num_agents * low_obs_dim)
+        # Add a dummy agent dimension: (n_threads, num_agents * low_obs_dim) -> (n_threads, 1, num_agents * low_obs_dim)
         share_obs_low_level_expanded = np.expand_dims(share_obs_low_level_flat, 1)
         
+        # Tile across the agent dimension so each agent receives the same centralized state.
         # (n_threads, 1, ...) -> (n_threads, num_agents, ...)
-        # 각 에이전트가 동일한 중앙 집중형 관측을 공유하도록 복제(tile)합니다.
         share_obs_low_level_tiled = np.tile(
             share_obs_low_level_expanded, 
-            (1, self.num_agents, 1)
+            (1, self.num_agents, 1) # Tile 'num_agents' times along axis 1
         )
 
-        # 최종 obs/share_obs 딕셔너리 반환
+        # Return structured dictionaries
         obs = {
             'low_level': obs_low_level_stacked,
             'high_level': high_level_obs
         }
         share_obs = {
             'low_level': share_obs_low_level_tiled,
-            'high_level': high_level_obs # High-level obs는 이미 중앙 집중형이므로 그대로 사용
+            'high_level': high_level_obs # High-level share_obs is same as obs
         }
         return obs, share_obs
 
     @torch.no_grad()
     def collect_low_level(self):
-        self.low_level_trainer.prep_rollout()
-        # (n_threads, n_agents, dim) -> (n_threads * n_agents, dim)으로 reshape
+        """
+        Collects actions and value predictions from the low-level policy.
+        :return: values, actions, action_log_probs, rnn_states, rnn_states_critic
+        """
+        self.low_level_trainer.prep_rollout()   # Set policy to eval mode
         buffer = self.low_level_buffer
-        step = buffer.step
+        step = buffer.step  # Current step in the buffer
         
+        # --- Prepare inputs for the policy ---
+        # Reshape inputs from (n_threads, n_agents, dim) to (n_threads * n_agents, dim)
+        # as the policy expects a flat batch.
         share_obs_input = buffer.share_obs[step].reshape(-1, buffer.share_obs.shape[-1])
         obs_input = buffer.obs[step].reshape(-1, buffer.obs.shape[-1])
-        # rnn_states도 (n_threads * n_agents, recurrent_N * hidden_size) 또는 (n_threads * n_agents, hidden_size)로 reshape
-        # rnn.py가 (B*N, hidden_size)를 예상하므로 rnn_states.shape[-1]이 hidden_size여야 함 (recurrent_N=1일 때)
+        
+        # Reshape RNN states. Shape depends on recurrent_N.
+        # Assumes rnn.py expects (B*N, hidden_size) if recurrent_N=1.
         rnn_states_input = buffer.rnn_states[step].reshape(-1, buffer.rnn_states.shape[-1])
         rnn_states_critic_input = buffer.rnn_states_critic[step].reshape(-1, buffer.rnn_states_critic.shape[-1])
         masks_input = buffer.masks[step].reshape(-1, buffer.masks.shape[-1])
 
+        # --- Get actions from policy ---
         value, action, action_log_prob, rnn_states, rnn_states_critic \
             = self.low_level_trainer.policy.get_actions(share_obs_input,
                                                         obs_input,
@@ -175,7 +232,7 @@ class H_UAVRunner(Runner):
                                                         rnn_states_critic_input,
                                                         masks_input)
             
-        # 정책 출력을 (n_threads, n_agents, dim) 형태로 재구성
+        # --- Reshape outputs back to (n_threads, n_agents, dim) ---
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
         action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
@@ -186,24 +243,33 @@ class H_UAVRunner(Runner):
 
     @torch.no_grad()
     def collect_high_level(self):
-        self.high_level_trainer.prep_rollout()
-        # (n_threads, 1, dim) -> (n_threads, dim)으로 reshape
+        """
+        Collects actions and value predictions from the high-level policy.
+        Similar to collect_low_level, but uses the high-level trainer/buffer
+        and handles the single high-level agent dimension (num_agents=1).
+        :return: values, actions, action_log_probs, rnn_states, rnn_states_critic
+        """
+        self.high_level_trainer.prep_rollout()  # Set policy to eval mode
         buffer = self.high_level_buffer
         step = buffer.step
 
+        # --- Prepare inputs for the policy ---
+        # Reshape inputs from (n_threads, 1, dim) -> (n_threads, dim)
         share_obs_input = buffer.share_obs[step].reshape(-1, buffer.share_obs.shape[-1])
         obs_input = buffer.obs[step].reshape(-1, buffer.obs.shape[-1])
         rnn_states_input = buffer.rnn_states[step].reshape(-1, buffer.rnn_states.shape[-1])
         rnn_states_critic_input = buffer.rnn_states_critic[step].reshape(-1, buffer.rnn_states_critic.shape[-1])
         masks_input = buffer.masks[step].reshape(-1, buffer.masks.shape[-1])
 
+        # --- Get actions from policy ---
         value, action, action_log_prob, rnn_states, rnn_states_critic \
             = self.high_level_trainer.policy.get_actions(share_obs_input,
                                                          obs_input,
                                                          rnn_states_input,
                                                          rnn_states_critic_input,
                                                          masks_input)
-            
+        
+        # --- Reshape outputs back to (n_threads, 1, dim) ---
         values = np.array(np.split(_t2n(value), self.n_rollout_threads))
         actions = np.array(np.split(_t2n(action), self.n_rollout_threads))
         action_log_probs = np.array(np.split(_t2n(action_log_prob), self.n_rollout_threads))
@@ -213,18 +279,21 @@ class H_UAVRunner(Runner):
         return values, actions, action_log_probs, rnn_states, rnn_states_critic
 
     def insert_low_level(self, data):
+        """
+        Inserts collected low-level experience into the low-level buffer.
+        :param data: (tuple) Contains observations, actions, rewards, etc.
+        """
         obs, share_obs, rewards, dones, infos, values, actions, action_log_probs, rnn_states, rnn_states_critic = data
         
-        # rnn_states shape: (n_threads, n_agents, hidden_size)
         rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
         rnn_states_critic[dones == True] = np.zeros(((dones == True).sum(), self.num_agents, self.hidden_size), dtype=np.float32)
         
         masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
         masks[dones == True] = np.float32(0.0)
 
-        # low_level 보상만 추출하여 (n_threads, n_agents, 1) 모양으로 변환합니다.
         low_rewards_list = [r['low_level'] for r in rewards]
         low_rewards_array = np.array(low_rewards_list) # shape (n_threads, n_agents)
+        
         low_rewards_reshaped = np.expand_dims(low_rewards_array, axis=-1) # shape (n_threads, n_agents, 1)
 
         # rnn_states의 shape (1, 4, 64) -> (1, 4, 1, 64)로 변경
