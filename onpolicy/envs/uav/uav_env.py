@@ -35,6 +35,14 @@ class UAVEnv(gym.Env):
         self.fly_th = args.fly_th   # Flying altitude threshold/default
         self.time_step = 0
         self.episode_len = args.episode_length
+        
+        self.gbs_pos = np.array([self.world_size / 2, self.world_size / 2, 0]) # 기지국(GBS) 위치 (맵 중앙, 지면)
+        self.fc = 2.4e9  # Carrier frequency (2.4 GHz, 기존 코드에서 유추)
+        self.c = 3e8     # Speed of light
+        self.a_plos = 9.61   # (parameters.py의 LOS_A와 일치)
+        self.b_plos = 0.16   # (parameters.py의 LOS_B와 일치)
+        self.eta_los = 1.0   # dB
+        self.eta_nlos = 20.0 # dB
 
         # 2. Create simulation entities (Agents, Targets, Obstacles)
         self.uavs = [UAV(start_x=np.random.rand() * self.world_size,
@@ -60,13 +68,30 @@ class UAVEnv(gym.Env):
         self.energy_prop_coeff = 0.1 # Coefficient for propulsion energy
         self.energy_comm_trad = 0.01 # Energy cost for traditional communication
         self.energy_comm_sem = 0.05 # Energy cost for semantic communication
+        self.time_delta = 1.0 # 1 time step = 1 second 가정
+        
+        self.P_IDLE = 80.0       # W (Hovering power)
+        self.U_TIP = 120         # m/s (Tip speed of the rotor blade)
+        self.V_0 = 4.03          # m/s (Mean rotor induced velocity in hover)
+        self.D_0 = 0.6           # Fuselage drag ratio
+        self.RHO = 1.225         # Air density (kg/m^3)
+        self.S_0 = 0.05          # Rotor solidity
+        self.A = 0.503           # Rotor disc area (m^2)
+        
+        # Fidelity 모델 파라미터
+        self.sem_base_quality = np.array([0.6, 0.75, 0.9]) # l=0, 1, 2 에 매핑
+        self.sem_robust_coeff = 0.5  # k
+        self.sem_robust_offset = 0.0 # S_offset
+        self.r_cover = 20.0 # PoI 방문 기본 보상 (기존 20)
+        self.w_energy = 0.1 # 에너지 페널티 가중치
 
         # 5. Define hierarchical observation and action spaces using gym.spaces
         
         # --- High-Level Spaces (Global Policy, 1 Agent) ---
         # Obs: (POI_positions) + (UAV_states)
-        high_obs_dim = (self.num_pois * 2) + (self.num_uavs * 3)
+        high_obs_dim = (self.num_pois * 2) + (self.num_uavs * 4)
         high_obs_space = spaces.Box(low=-np.inf, high=np.inf, shape=(high_obs_dim,), dtype=np.float32)
+        
         # Action: Assign a cluster index [0, num_clusters-1] to each UAV
         high_act_space = spaces.MultiDiscrete([self.num_clusters] * self.num_uavs)
 
@@ -176,7 +201,17 @@ class UAVEnv(gym.Env):
             
             # 2. Calculate propulsion energy cost
             # Simplified energy model: proportional to v^2
-            prop_energy = self.energy_prop_coeff * (self.uavs[0].v_max * (speed_idx + 1) / 3)**2
+            # prop_energy = self.energy_prop_coeff * (self.uavs[0].v_max * (speed_idx + 1) / 3)**2
+            current_speed = uav.v_max * (speed_idx + 1) / 3
+            # 'stay' action(dir_idx == 8)이거나 speed_idx가 0(hover)에 가까우면 속도를 0으로 간주
+            if move_dir_idx == 8 or speed_idx == -1: # (speed_idx는 0-2이므로 -1대신 0으로 체크필요. 코드에 맞춰 조정)
+                # speed_idx가 0, 1, 2 이므로 'stay' (dir_idx == 8) 일때만 속도 0
+                if move_dir_idx == 8: 
+                    current_speed = 0.0
+            
+            prop_power = self._calculate_propulsion_power(current_speed)
+            prop_energy = prop_power * self.time_delta # Energy = Power * Time
+            
             uav.energy -= prop_energy
             
             # 3. Calculate communication energy cost and SINR penalty/reward
@@ -184,27 +219,34 @@ class UAVEnv(gym.Env):
             comm_energy = 0
             if comm_mode == 0:  # Traditional mode
                 comm_energy = self.energy_comm_trad
-                if sinr < self.sinr_threshold: low_level_rewards[i] -= 2    # Penalty for low SINR in trad mode
             else:   # Semantic mode
                 comm_energy = self.energy_comm_sem * (1 + sem_level * 0.5)
-                if sinr < self.sinr_threshold: low_level_rewards[i] += 1    # Small reward for attempting sem comm in low SINR
             uav.energy -= comm_energy
+            
+            # 현재 Fidelity 계산 및 저장 ---
+            uav.current_fidelity = self._calculate_fidelity(comm_mode, sem_level, sinr)
             
             # 4. Calculate low-level reward
             # Reward for moving closer to the high-level goal
             low_level_rewards[i] += (dist_to_goal_before - dist_to_goal_after) * 0.5
             # Penalty for energy consumption
-            low_level_rewards[i] -= (prop_energy + comm_energy) * 0.1
+            low_level_rewards[i] -= (prop_energy + comm_energy) * self.w_energy
 
         # 5. Calculate high-level reward (global)
         high_level_reward = 0.0
         for poi in self.pois:
             if not poi.visited:
-                for uav in self.uavs:
+                for i, uav in enumerate(self.uavs):
                     # Check if any UAV is close enough to "visit" the POI
                     if np.linalg.norm(uav.pos[:2] - poi.pos) < 5:
                         poi.visited = True
-                        high_level_reward += 20     # Reward for visiting a new POI
+                        
+                        # --- 핵심 수정: Fidelity 기반 보상 ---
+                        fidelity_reward = self.r_cover * uav.current_fidelity
+                        high_level_reward += fidelity_reward
+                        
+                        # (선택) Low-level 에이전트에게도 이 보상을 일부 공유 (Credit Assignment)
+                        low_level_rewards[i] += fidelity_reward * 0.1
                         break
         
         # 6. Check for episode termination
@@ -239,27 +281,116 @@ class UAVEnv(gym.Env):
         self.uav_trajectories[self.uavs.index(uav)].append(uav.pos[:2].copy())
 
     def _calculate_sinr(self, uav):
-        """Helper function to calculate the SINR for a UAV."""
-        # Simplified path loss model
-        dist_to_gbs = np.linalg.norm(uav.pos) # Assuming gBS is at (0,0,0)
-        path_loss = 20 * np.log10(dist_to_gbs) + 20 * np.log10(4 * np.pi * 2.4e9 / 3e8) if dist_to_gbs > 0 else 0
+        """
+        Helper function to calculate the SINR for a UAV based on 3D A2G channel model.
+        (Ref: [저서 Uav Communications for 5G and Beyond.pdf] Ch. 2)
+        """
         
-        # Calculate interference from all jammers within their radius
-        jammer_interference = 0
+        # --- 1. 신호 경로 계산 (UAV to GBS) ---
+        
+        # 3D 거리 벡터 및 스칼라 거리 계산
+        vec_to_gbs = self.gbs_pos - uav.pos
+        d_3d = np.linalg.norm(vec_to_gbs)
+        if d_3d < 1.0: d_3d = 1.0 # 1m 미만 클리핑
+
+        # 2D (수평) 거리 계산
+        r_2d = np.linalg.norm(vec_to_gbs[:2])
+        
+        # 고도각(Elevation angle) 계산 (degrees)
+        elevation_rad = np.arcsin(uav.pos[2] / d_3d)
+        elevation_deg = np.degrees(elevation_rad)
+        if elevation_deg < 0: elevation_deg = 0
+        
+        # LoS 확률 계산 (Sigmoid)
+        p_los = 1.0 / (1.0 + self.a_plos * np.exp(-self.b_plos * (elevation_deg - self.a_plos)))
+        
+        # 자유 공간 경로 손실 (FSPL) 계산 (dB)
+        # (기존) path_loss = 20 * np.log10(dist_to_gbs) + 20 * np.log10(4 * np.pi * 2.4e9 / 3e8)
+        # (수정)
+        pl_fspl_db = 20 * np.log10(d_3d) + 20 * np.log10(self.fc) + 20 * np.log10(4 * np.pi / self.c)
+        
+        # LoS 및 NLoS 경로 손실 (dB)
+        pl_los_db = pl_fspl_db + self.eta_los
+        pl_nlos_db = pl_fspl_db + self.eta_nlos
+        
+        # 평균 경로 손실 (dB)
+        avg_path_loss_db = p_los * pl_los_db + (1 - p_los) * pl_nlos_db
+        
+        # 수신 신호 전력 계산 (dBm)
+        tx_power_dbm = 10 * np.log10(uav.transmit_power * 1000) # W to dBm
+        signal_power_dbm = tx_power_dbm - avg_path_loss_db
+
+        # --- 2. 간섭 경로 계산 (Jammers to UAV) ---
+        jammer_interference_watts = 0
         for j in self.jammers:
-            dist_to_jammer = np.linalg.norm(uav.pos[:2] - j.pos)
+            # (기존) dist_to_jammer = np.linalg.norm(uav.pos[:2] - j.pos)
+            # (수정) 재머는 지면에 있다고 가정 (3D 거리)
+            jammer_pos_3d = np.array([j.pos[0], j.pos[1], 0])
+            dist_to_jammer = np.linalg.norm(uav.pos - jammer_pos_3d)
+            
             if dist_to_jammer < j.radius:
-                jammer_interference += j.power / (dist_to_jammer**2 + 1e-9) # 1e-9 to avoid division by zero
+                # 간섭 신호는 단순 자유 공간 모델(FSPL)을 따른다고 가정 (단순화)
+                # (기존) jammer_interference += j.power / (dist_to_jammer**2 + 1e-9)
+                # (수정) FSPL (linear) = (c / (4 * pi * d * f))^2
+                lambda_sq = (self.c / self.fc)**2
+                fspl_linear = lambda_sq / ((4 * np.pi * dist_to_jammer)**2 + 1e-9)
+                jammer_interference_watts += j.power * fspl_linear
 
-        signal_power = uav.transmit_power / (10**(path_loss/10)) if path_loss > 0 else uav.transmit_power
+        # --- 3. SINR 계산 (dB) ---
         
-        # Calculate SINR
-        denominator = self.noise_power + jammer_interference
-        sinr = signal_power / denominator if denominator > 0 else signal_power
+        # 잡음 + 간섭 전력 (Watts)
+        noise_plus_interference_watts = self.noise_power + jammer_interference_watts
         
-        # Convert to dB
-        return 10 * np.log10(sinr) if sinr > 0 else -100
-
+        # 수신 신호 전력 (Watts)
+        signal_power_watts = 10**((signal_power_dbm - 30) / 10) # dBm to W
+        
+        # SINR (linear)
+        sinr_linear = signal_power_watts / noise_plus_interference_watts
+        
+        # SINR (dB)
+        return 10 * np.log10(sinr_linear) if sinr_linear > 0 else -100
+    
+    def _calculate_fidelity(self, comm_mode, sem_level, sinr):
+        """
+        Calculates the data fidelity based on comm mode, sem level, and SINR.
+        Implements the mathematical formulation.
+        """
+        if comm_mode == 0: # Traditional Mode
+            # 수식 (A) 구현: Cliff-effect
+            return 1.0 if sinr >= self.sinr_threshold else 0.0
+        else: # Semantic Mode
+            # 수식 (B) 구현: Graceful degradation
+            
+            # 1. Base Quality
+            base_quality = self.sem_base_quality[sem_level]
+            
+            # 2. Robustness (Sigmoid)
+            robustness = 1.0 / (1.0 + np.exp(-self.sem_robust_coeff * (sinr - self.sem_robust_offset)))
+            
+            return base_quality * robustness
+    
+    def _calculate_propulsion_power(self, V):
+        """
+        Calculates the propulsion power (in Watts) for a UAV flying at speed V.
+        Based on the model in [저서 wireless-communications-and-networking-for-unmanned-aerial-vehicles.pdf]
+        and parameters from parameters.py.
+        """
+        V_squared = V**2
+        V_fourth = V**4
+        
+        # 1. Blade Profile Power
+        P_blade = self.P_IDLE * (1 + (3 * V_squared) / (self.U_TIP**2))
+        
+        # 2. Induced Power
+        v_0_fourth = self.V_0**4
+        sqrt_term = np.sqrt(np.sqrt(1 + V_fourth / (4 * v_0_fourth)) - V_squared / (2 * self.V_0**2))
+        P_induced = self.P_IDLE * sqrt_term
+        
+        # 3. Parasite Drag Power
+        P_parasite = 0.5 * self.D_0 * self.RHO * self.S_0 * self.A * (V**3)
+        
+        return P_blade + P_induced + P_parasite
+    
     def _get_low_level_obs(self):
         """
         Generates the local observation for each low-level agent (UAV).
@@ -299,7 +430,15 @@ class UAVEnv(gym.Env):
         poi_info = np.array([[p.pos[0]/self.world_size, p.pos[1]/self.world_size] for p in self.pois]).flatten()
         
         # 2. UAV information (normalized positions and energy)
-        uav_info = np.array([[u.pos[0]/self.world_size, u.pos[1]/self.world_size, u.energy/u.max_energy] for u in self.uavs]).flatten()
+        uav_info_list = []
+        for u in self.uavs:
+            uav_info_list.extend([
+                u.pos[0]/self.world_size,
+                u.pos[1]/self.world_size,
+                u.energy/u.max_energy,
+                self._calculate_sinr(u) / 20.0 # SINR 정규화 (기존 low-level과 동일하게)
+            ])
+        uav_info = np.array(uav_info_list).flatten()
         
         # Pad POI info if some POIs have been visited (to maintain fixed obs dim)
         if len(poi_info) < self.num_pois * 2:
