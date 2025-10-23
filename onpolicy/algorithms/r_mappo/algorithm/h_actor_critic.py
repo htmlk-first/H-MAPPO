@@ -32,7 +32,9 @@ class H_Actor(nn.Module):
         else:
             # Low-level policy: Custom encoder structure
             # Define dimensions for different parts of the low-level observation
-            self_obs_dim = 4    # [pos_x, pos_y, energy, sinr]
+            # (목표 설계 반영) S_low 변경 (p_los 추가)
+            self_obs_dim = 5    # [pos_x, pos_y, energy, sinr, p_los]
+            
             other_uav_dim = 2 * (self.num_agents - 1)   # [rel_pos_x, rel_pos_y] for each other UAV
             goal_dim = 2    # [rel_goal_x, rel_goal_y]
             
@@ -67,9 +69,11 @@ class H_Actor(nn.Module):
             # Low-level policy forward pass
             # Split the observation tensor into its components
             other_uav_obs_dim = 2 * (self.num_agents - 1)
-            self_obs = obs[:, :4]
-            other_uav_obs = obs[:, 4 : 4 + other_uav_obs_dim]
-            goal_obs = obs[:, 4 + other_uav_obs_dim:]
+            
+            # (목표 설계 반영) S_low 변경 (p_los 추가)에 따른 인덱싱 수정
+            self_obs = obs[:, :5]
+            other_uav_obs = obs[:, 5 : 5 + other_uav_obs_dim]
+            goal_obs = obs[:, 5 + other_uav_obs_dim:]
 
             # Pass components through their respective encoders
             self_features = self.self_encoder(self_obs)
