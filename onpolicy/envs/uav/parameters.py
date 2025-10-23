@@ -9,6 +9,7 @@ SIM_TIME_STEPS = 500    # Maximum number of steps per episode
 N_UAVS = 4              # Default number of UAVs (agents)
 N_TARGETS = 20          # Default number of Points of Interest (PoIs)
 N_JAMMERS = 2           # Default number of Jammers
+TIME_DELTA = 1.0        # Duration of a single time step in seconds
 
 # --- UAV Parameters ---
 # Defines the physical properties and constraints of the UAV agents.
@@ -31,6 +32,12 @@ RHO = 1.225             # Air density (kg/m^3)
 S_0 = 0.05              # Rotor solidity
 A = 0.503               # Rotor disc area (m^2)
 
+# --- Simplified Energy Model (uav_env.py) ---
+# Parameters used directly by the current uav_env.py implementation
+ENERGY_COMM_TRAD = 0.01   # Energy cost for traditional communication
+ENERGY_COMM_SEM = 0.05    # Base energy cost for semantic communication
+ENERGY_PROP_COEFF = 0.1  # Coefficient for propulsion energy calculation
+
 # --- Communication Parameters ---
 # Defines parameters for the wireless communication model (SINR calculation).
 
@@ -44,6 +51,12 @@ LOS_B = 0.16            # Path loss exponent for LoS
 NLOS_MULTIPLIER = 0.2   # Non-Line-of-Sight (NLoS) path loss multiplier (e.g., 0.2 means 5x worse)
 DATA_PACKET_SIZE = 1e6  # 1 Mbit (Size of data to be collected/transmitted)
 
+# --- Channel Model Parameters (uav_env.py) ---
+FC = 2.4e9              # Carrier frequency (2.4 GHz)
+C = 3e8                 # Speed of light (m/s)
+ETA_LOS = 1.0           # Additional path loss for LoS (dB)
+ETA_NLOS = 20.0         # Additional path loss for NLoS (dB)
+
 # --- Semantic Communication Parameters ---
 # Parameters related to the semantic communication mode.
 
@@ -56,6 +69,11 @@ PROC_DELAY_COEFF = 0.005  # Coefficient for processing delay
 PROC_ENERGY_COEFF = 0.025 # Coefficient for processing energy consumption
 QUALITY_FUNC_COEFF = 2.0  # Coefficient for calculating data quality
 SINR_THRESHOLD = 5      # dB (Threshold for successful communication)
+
+# --- Fidelity Model Parameters (uav_env.py) ---
+SEM_BASE_QUALITY = np.array([0.6, 0.75, 0.9]) # Base quality for sem_level 0, 1, 2
+SEM_ROBUST_COEFF = 0.5  # 'k' - Steepness of the fidelity sigmoid curve
+SEM_ROBUST_OFFSET = 0.0 # 'S_offset' - SINR offset for the fidelity sigmoid curve
 
 # --- MARL (Multi-Agent Reinforcement Learning) Parameters ---
 

@@ -6,6 +6,7 @@ from gym import spaces
 from sklearn.cluster import KMeans
 
 from .entities import UAV, Jammer, PointOfInterest
+from . import parameters as params
 
 class UAVEnv(gym.Env):
     """
@@ -37,12 +38,12 @@ class UAVEnv(gym.Env):
         self.episode_len = args.episode_length
         
         self.gbs_pos = np.array([self.world_size / 2, self.world_size / 2, 0]) # 기지국(GBS) 위치 (맵 중앙, 지면)
-        self.fc = 2.4e9  # Carrier frequency (2.4 GHz, 기존 코드에서 유추)
-        self.c = 3e8     # Speed of light
-        self.a_plos = 9.61   # (parameters.py의 LOS_A와 일치)
-        self.b_plos = 0.16   # (parameters.py의 LOS_B와 일치)
-        self.eta_los = 1.0   # dB
-        self.eta_nlos = 20.0 # dB
+        self.fc = params.FC     # Carrier frequency (2.4 GHz)
+        self.c = params.C       # Speed of light
+        self.a_plos = params.LOS_A   
+        self.b_plos = params.LOS_B   
+        self.eta_los = params.ETA_LOS   
+        self.eta_nlos = params.ETA_NLOS 
 
         # 2. Create simulation entities (Agents, Targets, Obstacles)
         self.uavs = [UAV(start_x=np.random.rand() * self.world_size,
@@ -63,27 +64,27 @@ class UAVEnv(gym.Env):
         self.uav_goals = np.zeros((self.num_uavs, 2))   # 2D coordinates of the goal for each UAV
 
         # 4. Communication and energy model parameters
-        self.sinr_threshold = 5 # dB, threshold for successful communication
-        self.noise_power = 1e-9 # Noise power in SINR calculation
-        self.energy_prop_coeff = 0.1 # Coefficient for propulsion energy
-        self.energy_comm_trad = 0.01 # Energy cost for traditional communication
-        self.energy_comm_sem = 0.05 # Energy cost for semantic communication
-        self.time_delta = 1.0 # 1 time step = 1 second 가정
+        self.sinr_threshold = params.SINR_THRESHOLD = 5 # dB, threshold for successful communication
+        self.noise_power = params.NOISE_DENSITY * params.BANDWIDTH # Noise power in SINR calculation
+        self.energy_prop_coeff = params.ENERGY_PROP_COEFF # Coefficient for propulsion energy
+        self.energy_comm_trad = params.ENERGY_COMM_TRAD # Energy cost for traditional communication
+        self.energy_comm_sem = params.ENERGY_COMM_SEM # Energy cost for semantic communication
+        self.time_delta = params.TIME_DELTA # 1 time step = 1 second 가정
         
-        self.P_IDLE = 80.0       # W (Hovering power)
-        self.U_TIP = 120         # m/s (Tip speed of the rotor blade)
-        self.V_0 = 4.03          # m/s (Mean rotor induced velocity in hover)
-        self.D_0 = 0.6           # Fuselage drag ratio
-        self.RHO = 1.225         # Air density (kg/m^3)
-        self.S_0 = 0.05          # Rotor solidity
-        self.A = 0.503           # Rotor disc area (m^2)
+        self.P_IDLE = params.P_IDLE       # W (Hovering power)
+        self.U_TIP = params.U_TIP         # m/s (Tip speed of the rotor blade)
+        self.V_0 = params.V_0          # m/s (Mean rotor induced velocity in hover)
+        self.D_0 = params.D_0           # Fuselage drag ratio
+        self.RHO = params.RHO         # Air density (kg/m^3)
+        self.S_0 = params.S_0          # Rotor solidity
+        self.A = params.A           # Rotor disc area (m^2)
         
         # Fidelity 모델 파라미터
-        self.sem_base_quality = np.array([0.6, 0.75, 0.9]) # l=0, 1, 2 에 매핑
-        self.sem_robust_coeff = 0.5  # k
-        self.sem_robust_offset = 0.0 # S_offset
-        self.r_cover = 20.0 # PoI 방문 기본 보상 (기존 20)
-        self.w_energy = 0.1 # 에너지 페널티 가중치
+        self.sem_base_quality = params.SEM_BASE_QUALITY # l=0, 1, 2 에 매핑
+        self.sem_robust_coeff = params.SEM_ROBUST_COEFF  # k
+        self.sem_robust_offset = params.SEM_ROBUST_OFFSET # S_offset
+        self.r_cover = params.R_COVER # PoI 방문 기본 보상
+        self.w_energy = params.W_ENERGY # 에너지 페널티 가중치
 
         # 5. Define hierarchical observation and action spaces using gym.spaces
         

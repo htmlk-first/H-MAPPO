@@ -1,5 +1,5 @@
 import numpy as np
-from .parameters import *
+from . import parameters as params
 
 class UAV:
     """
@@ -25,22 +25,22 @@ class UAV:
         self.u_max = u_max
         
         # --- State variables for communication and energy ---
-        self.max_energy = 1000.0    # Maximum energy capacity (example value)
+        self.max_energy = params.UAV_MAX_ENERGY    # Maximum energy capacity
         self.energy = self.max_energy   # Current remaining energy
         self.comm_mode = 0   # 0: Traditional, 1: Semantic
         self.sem_level = 0   # Semantic communication level
-        self.transmit_power = 1.0   # Communication transmission power
+        self.transmit_power = params.UAV_TX_POWER   # Communication transmission power
         
     def reset(self):
         """
         Resets the UAV's state to a new random position and full energy.
         (Note: This method seems unused; uav_env.py handles reset manually).
         """
-        self.pos = np.array([np.random.uniform(0, AREA_WIDTH),
-                               np.random.uniform(0, AREA_HEIGHT),
-                               UAV_ALTITUDE])
+        self.pos = np.array([np.random.uniform(0, params.AREA_WIDTH),
+                               np.random.uniform(0, params.AREA_HEIGHT),
+                               params.UAV_ALTITUDE])
         self.velocity = np.zeros(2)
-        self.rem_energy = UAV_MAX_ENERGY
+        self.rem_energy = params.UAV_MAX_ENERGY
         self.assigned_cluster_id = -1
         
 class Jammer:
