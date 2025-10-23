@@ -1,10 +1,3 @@
-python train_uav.py --env_name UAV --algorithm_name rmappo --experiment_name h_mappo_test --num_uavs 4 --num_pois 12 --num_jammers 2 --high_level_timestep 15 --seed 1 --n_training_threads 1 --n_rollout_threads 1 --num_env_steps 200000 --ppo_epoch 10 --episode_length 200 --use_wandb False
+python train_uav.py --env_name UAV --algorithm_name rmappo --experiment_name test --num_uavs 4 --num_pois 12 --num_jammers 2 --high_level_timestep 15 --seed 1 --n_training_threads 1 --n_rollout_threads 16 --num_env_steps 5000000 --ppo_epoch 10 --episode_length 500 --num_mini_batch 5 --use_wandb False
 
-
-python render/render_uav.py \
-    --model_dir "full/path/to/onpolicy/results/UAV/simple_uav/rmappo/h_mappo_test/run28/models" \
-    --num_uavs 4 \
-    --num_pois 12 \
-    --num_jammers 2 \
-    --episode_length 200 \
-    --algorithm_name rmappo
+python render/render_uav.py --model_dir "results/UAV/simple_uav/rmappo/test/run6/models" --num_uavs 4 --num_pois 12 --num_jammers 2 --episode_length 200 --algorithm_name rmappo

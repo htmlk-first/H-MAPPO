@@ -89,6 +89,54 @@ class H_Actor(nn.Module):
 
         actions, action_log_probs = self.act(actor_features, available_actions, deterministic)
         return actions, action_log_probs, rnn_states
+    
+    def evaluate_actions(self, obs, rnn_states, action, masks, available_actions=None, active_masks=None):
+        """
+        Compute log probability and entropy of given actions.
+        (This method is required by the PPO update logic).
+        """
+        # Ensure all inputs are torch tensors on the correct device
+        obs = check(obs).to(**self.tpdv)
+        rnn_states = check(rnn_states).to(**self.tpdv)
+        action = check(action).to(**self.tpdv) # Add action tensor check
+        masks = check(masks).to(**self.tpdv)
+        if available_actions is not None:
+            available_actions = check(available_actions).to(**self.tpdv)
+        if active_masks is not None:
+            active_masks = check(active_masks).to(**self.tpdv)
+        
+        if self.base is not None:
+            # High-level policy forward pass
+            actor_features = self.base(obs)
+        else:
+            # Low-level policy forward pass
+            # Split the observation tensor into its components
+            other_uav_obs_dim = 2 * (self.num_agents - 1)
+            
+            # (목표 설계 반영) S_low 변경 (p_los 추가)에 따른 인덱싱 수정
+            self_obs = obs[:, :5]
+            other_uav_obs = obs[:, 5 : 5 + other_uav_obs_dim]
+            goal_obs = obs[:, 5 + other_uav_obs_dim:]
+
+            # Pass components through their respective encoders
+            self_features = self.self_encoder(self_obs)
+            other_uav_features = self.other_uav_encoder(other_uav_obs)
+            goal_features = self.goal_encoder(goal_obs)
+            
+            # Concatenate features to form the input for the RNN
+            actor_features = torch.cat([self_features, other_uav_features, goal_features], dim=-1)
+
+        if self._use_recurrent_policy:
+            # Pass features through RNN
+            actor_features, rnn_states = self.rnn(actor_features, rnn_states, masks)
+
+        # [KEY CHANGE] Call evaluate_actions on the ACTLayer
+        action_log_probs, dist_entropy = self.act.evaluate_actions(actor_features,
+                                                                   action,
+                                                                   available_actions,
+                                                                   active_masks=active_masks)
+                                                                   
+        return action_log_probs, dist_entropy
 
 class H_Critic(nn.Module):
     """

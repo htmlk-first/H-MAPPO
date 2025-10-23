@@ -118,7 +118,7 @@ class H_UAVRunner(Runner):
             # --- End episode rollout ---
             
             # 7. Compute returns (GAE) and perform training updates for both levels
-            self.compute_and_train()
+            low_train_infos, high_train_infos = self.compute_and_train()
             
             # Calculate total steps taken
             total_num_steps = (episode + 1) * self.episode_length * self.n_rollout_threads
@@ -132,14 +132,40 @@ class H_UAVRunner(Runner):
                 end = time.time()
                 print(f"\n Episode {episode}/{episodes}, total num timesteps {total_num_steps} || FPS {int(total_num_steps / (end - start))}")
 
+                # [추가] 캡처한 정보를 log_train으로 전달
+                prefixed_low_infos = {f"low_level/{k}": v for k, v in low_train_infos.items()}
+                prefixed_high_infos = {f"high_level/{k}": v for k, v in high_train_infos.items()}
+                
+                self.log_train(prefixed_low_infos, total_num_steps)
+                self.log_train(prefixed_high_infos, total_num_steps)
+
+                # [추가] 에피소드 보상 로깅 (uav_runner.py 참고)
+                if self.high_level_buffer.rewards.size > 0:
+                     avg_high_reward = np.mean(self.high_level_buffer.rewards) * self.episode_length
+                     self.log_train({"high_level/episode_reward": avg_high_reward}, total_num_steps)
+                
+                if self.low_level_buffer.rewards.size > 0:
+                     avg_low_reward = np.mean(self.low_level_buffer.rewards) * self.episode_length
+                     self.log_train({"low_level/episode_reward": avg_low_reward}, total_num_steps)
+
     def warmup(self):
         """
         Initializes the buffers with the first observation from the environment.
         """
         # DummyVecEnv.reset() returns a tuple (obs, infos).
-        full_obs_tuple = self.envs.reset()
+        # SubprocVecEnv.reset() returns just obs (due to our fix in the worker).
+        full_obs_tuple_or_array = self.envs.reset()
+        
+        # Handle different return types from VecEnvs
+        if isinstance(full_obs_tuple_or_array, tuple):
+            # Case: n_rollout_threads = 1 (DummyVecEnv)
+            full_obs = full_obs_tuple_or_array[0]
+        else:
+            # Case: n_rollout_threads > 1 (SubprocVecEnv)
+            full_obs = full_obs_tuple_or_array
+            
         # Pass only the observation part to unpack_obs.
-        obs, share_obs = self.unpack_obs(full_obs_tuple[0])
+        obs, share_obs = self.unpack_obs(full_obs)
         
         # Store initial observations in both buffers at step 0.
         self.low_level_buffer.share_obs[0] = share_obs['low_level'].copy()
@@ -345,8 +371,14 @@ class H_UAVRunner(Runner):
                                                                     rnn_states_input,
                                                                     masks_input)
         next_values_low = _t2n(next_values_low)
+        next_values_low = np.array(np.split(next_values_low, self.n_rollout_threads))
         self.low_level_buffer.compute_returns(next_values_low, self.low_level_trainer.value_normalizer)
 
+        # Train network
+        self.low_level_trainer.prep_training()
+        low_train_infos = self.low_level_trainer.train(self.low_level_buffer)
+        self.low_level_buffer.after_update()
+        
         # High Level
         self.high_level_trainer.prep_rollout()
 
@@ -365,7 +397,16 @@ class H_UAVRunner(Runner):
                                                                       rnn_states_input,
                                                                       masks_input)
         next_values_high = _t2n(next_values_high)
+        next_values_high = np.array(np.split(next_values_high, self.n_rollout_threads))
         self.high_level_buffer.compute_returns(next_values_high, self.high_level_trainer.value_normalizer)
+        
+        # Train network
+        self.high_level_trainer.prep_training()
+        high_train_infos = self.high_level_trainer.train(self.high_level_buffer)
+        self.high_level_buffer.after_update()
+        
+        # --- 3. Return infos for logging ---
+        return low_train_infos, high_train_infos
         
     def save(self):
         """Save high-level and low-level policies."""
@@ -387,3 +428,16 @@ class H_UAVRunner(Runner):
         if self.low_level_trainer._use_valuenorm:
             policy_vnorm_low = self.low_level_trainer.value_normalizer
             torch.save(policy_vnorm_low.state_dict(), str(self.save_dir) + "/low_level_vnorm.pt")
+            
+    def log_train(self, train_infos, total_num_steps):
+        """
+        Log training info.
+        :param train_infos: (dict) information about training update.
+        :param total_num_steps: (int) total number of training env steps.
+        """
+        for k, v in train_infos.items():
+            if self.use_wandb:
+                # wandb.log({k: v}, step=total_num_steps) # wandb는 사용 안 함
+                pass
+            else:
+                self.writter.add_scalars(k, {k: v}, total_num_steps)

@@ -151,14 +151,14 @@ def worker(remote, parent_remote, env_fn_wrapper):
             ob, reward, done, info = env.step(data)
             if 'bool' in done.__class__.__name__:
                 if done:
-                    ob = env.reset()
+                    ob, _ = env.reset() # 튜플을 언패킹하고 obs만 사용
             else:
                 if np.all(done):
-                    ob = env.reset()
+                    ob, _ = env.reset() # 튜플을 언패킹하고 obs만 사용
 
             remote.send((ob, reward, done, info))
         elif cmd == 'reset':
-            ob = env.reset()
+            ob, _ = env.reset() # 튜플을 언패킹하고 obs만 사용
             remote.send((ob))
         elif cmd == 'render':
             if data == "rgb_array":
@@ -175,6 +175,11 @@ def worker(remote, parent_remote, env_fn_wrapper):
             break
         elif cmd == 'get_spaces':
             remote.send((env.observation_space, env.share_observation_space, env.action_space))
+        elif cmd == 'env_method':
+            method_name, args, kwargs = data
+            method = getattr(env, method_name)
+            result = method(*args, **kwargs)
+            remote.send(result)
         else:
             raise NotImplementedError
 
@@ -295,6 +300,24 @@ class SubprocVecEnv(ShareVecEnv):
         for p in self.ps:
             p.join()
         self.closed = True
+    
+    def env_method(self, method_name, *method_args, **method_kwargs):
+        """
+        Call a method on each remote environment.
+        """
+        # 각 remote에 보낼 인수 리스트를 준비합니다.
+        args_by_remote = [[] for _ in range(self.num_envs)]
+        for arg in method_args:
+            for i in range(self.num_envs):
+                args_by_remote[i].append(arg[i])
+        
+        # 각 worker에 'env_method' 커맨드를 전송합니다.
+        for i, remote in enumerate(self.remotes):
+            remote.send(('env_method', (method_name, args_by_remote[i], method_kwargs)))
+        
+        # 결과를 수집하여 반환합니다.
+        results = [remote.recv() for remote in self.remotes]
+        return results
 
     def render(self, mode="rgb_array"):
         for remote in self.remotes:
